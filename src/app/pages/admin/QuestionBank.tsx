@@ -1,17 +1,22 @@
 // src/pages/admin/QuestionBank.tsx
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { AdminLayout } from "../../components/AdminLayout";
 import {
   Upload, Search, Edit, Trash2, Plus, Download,
   ChevronDown, ChevronUp, X, Loader2, Check, PenLine, BookOpen,
 } from "lucide-react";
-import { useAsync } from "../../hooks/useAsync";
-import { getCampaigns } from "../../lib/api";
-import type { Campaign } from "../../../types/database";
 import * as XLSX from "xlsx";
-import { supabase } from "../../lib/supabase"; // adjust import path if needed
+import { supabase } from "../../lib/supabase";
 
-// ─── DB-aligned types ─────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Campaign {
+  id: string;
+  name: string;
+  description?: string;
+  is_active?: boolean;
+  created_at?: string;
+}
+
 interface DBQuestion {
   id: string;
   campaign_id: string;
@@ -21,20 +26,28 @@ interface DBQuestion {
   option_c: string | null;
   option_d: string | null;
   option_e: string | null;
-  correct_option: string; // 'A' | 'B' | 'C' | 'D' | 'E'
+  correct_option: string;
   difficulty: "EASY" | "MEDIUM" | "HARD";
   created_at: string;
 }
 
 type CorrectOption = "A" | "B" | "C" | "D" | "E";
-const OPTION_KEYS = ["option_a", "option_b", "option_c", "option_d", "option_e"] as const;
 const OPTION_LETTERS: CorrectOption[] = ["A", "B", "C", "D", "E"];
 
-// ─── API helpers (direct Supabase — matches your actual schema) ───────────────
+// ─── Supabase helpers ─────────────────────────────────────────────────────────
+async function fetchCampaigns(): Promise<Campaign[]> {
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("id, name, description, is_active, created_at")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
 async function fetchQuestions(
   campaignId?: string,
   opts?: { search?: string; difficulty?: string; page?: number; pageSize?: number }
-) {
+): Promise<{ data: DBQuestion[]; count: number }> {
   const { search = "", difficulty = "all", page = 0, pageSize = 25 } = opts ?? {};
   let query = supabase
     .from("questions")
@@ -44,7 +57,7 @@ async function fetchQuestions(
 
   if (campaignId) query = query.eq("campaign_id", campaignId);
   if (search) query = query.ilike("question_text", `%${search}%`);
-  if (difficulty !== "all") query = query.eq("difficulty", difficulty);
+  if (difficulty !== "all") query = query.eq("difficulty", difficulty.toUpperCase());
 
   const { data, count, error } = await query;
   if (error) throw error;
@@ -78,7 +91,9 @@ const DIFFICULTY_COLORS: Record<string, string> = {
   HARD: "bg-[#EF4444] text-white",
 };
 
-// ─── Question Form (shared by modal + panel) ──────────────────────────────────
+const PAGE_SIZE = 25;
+
+// ─── Question Form ────────────────────────────────────────────────────────────
 interface QuestionFormProps {
   initial?: DBQuestion;
   campaignId: string;
@@ -329,16 +344,17 @@ function AddPanel({
   onSaved: () => void;
   onClose: () => void;
 }) {
-  const [successCount, setSuccessCount] = useState(0);
-  const [key, setKey] = useState(0); // reset form key
-
+  // onSaved refreshes the list; onClose closes the panel — both happen on save
   const handleSaved = () => {
-    setSuccessCount((c) => c + 1);
     onSaved();
+    onClose();
   };
 
   return (
-    <div className="bg-card border-2 border-[#4F46E5]/30 rounded-2xl p-6 mb-6" id="manual-entry-panel">
+    <div
+      className="bg-card border-2 border-[#4F46E5]/30 rounded-2xl p-6 mb-6"
+      id="manual-entry-panel"
+    >
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-[#4F46E5]/10 rounded-xl flex items-center justify-center">
@@ -346,18 +362,19 @@ function AddPanel({
           </div>
           <h3 className="text-base font-bold">Add Question Manually</h3>
         </div>
-        <button onClick={onClose} className="p-2 hover:bg-muted rounded-lg text-muted-foreground" aria-label="Close">
+        <button
+          onClick={onClose}
+          className="p-2 hover:bg-muted rounded-lg text-muted-foreground"
+          aria-label="Close"
+        >
           <X className="w-4 h-4" />
         </button>
       </div>
       <QuestionForm
-        key={key}
         campaignId={campaignId}
         onSaved={handleSaved}
         onClose={onClose}
-        showSaveAndAnother
-        onSaveAndAnother={() => setKey((k) => k + 1)}
-        successCount={successCount}
+        saveLabel="Save Question"
       />
     </div>
   );
@@ -365,73 +382,127 @@ function AddPanel({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export function QuestionBank() {
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(true);
+
   const [selectedCampaignId, setSelectedCampaignId] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>("all");
+  const [page, setPage] = useState(0);
+
+  const [questions, setQuestions] = useState<DBQuestion[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
+
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingQuestion, setEditingQuestion] = useState<DBQuestion | null>(null);
   const [showAddPanel, setShowAddPanel] = useState(false);
-  const [page, setPage] = useState(0);
-  const PAGE_SIZE = 25;
 
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  const { data: campaigns = [] } = useAsync(getCampaigns, [], true);
+  // ── Fetch campaigns on mount ───────────────────────────────────────────────
+  useEffect(() => {
+    fetchCampaigns()
+      .then(setCampaigns)
+      .catch((e) => console.error("Failed to load campaigns:", e))
+      .finally(() => setCampaignsLoading(false));
+  }, []);
 
-  const doFetch = useCallback(
-    () => fetchQuestions(selectedCampaignId || undefined, {
-      search: searchQuery,
-      difficulty: selectedDifficulty,
-      page,
-      pageSize: PAGE_SIZE,
-    }),
-    [selectedCampaignId, searchQuery, selectedDifficulty, page]
-  );
+  // ── Fetch questions whenever filters change ────────────────────────────────
+  // Use a ref to track the latest fetch so stale responses don't overwrite newer ones
+  const fetchIdRef = useRef(0);
 
-  const { data: result, loading, refetch } = useAsync(
-    doFetch,
-    [selectedCampaignId, searchQuery, selectedDifficulty, page],
-    true
-  );
+  const loadQuestions = useCallback(async () => {
+    const id = ++fetchIdRef.current;
+    setLoadingQuestions(true);
+    try {
+      const result = await fetchQuestions(selectedCampaignId || undefined, {
+        search: searchQuery,
+        difficulty: selectedDifficulty,
+        page,
+        pageSize: PAGE_SIZE,
+      });
+      // Only apply if this is still the latest fetch
+      if (id === fetchIdRef.current) {
+        setQuestions(result.data);
+        setTotalCount(result.count);
+      }
+    } catch (e) {
+      console.error("Failed to load questions:", e);
+    } finally {
+      if (id === fetchIdRef.current) setLoadingQuestions(false);
+    }
+  }, [selectedCampaignId, searchQuery, selectedDifficulty, page]);
 
-  const questions: DBQuestion[] = result?.data ?? [];
-  const totalCount = result?.count ?? 0;
+  useEffect(() => {
+    loadQuestions();
+  }, [loadQuestions]);
+
+  // ── Derived ────────────────────────────────────────────────────────────────
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
   const toggleId = (id: string) => {
-    const next = new Set(selectedIds);
-    next.has(id) ? next.delete(id) : next.add(id);
-    setSelectedIds(next);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
+
   const toggleAll = () => {
     setSelectedIds(
-      selectedIds.size === questions.length
+      selectedIds.size === questions.length && questions.length > 0
         ? new Set()
         : new Set(questions.map((q) => q.id))
     );
   };
 
   const handleDeleteSelected = async () => {
-    if (!confirm(`Delete ${selectedIds.size} selected questions?`)) return;
-    try { await removeQuestions([...selectedIds]); setSelectedIds(new Set()); refetch(); }
-    catch (e) { alert("Delete failed: " + (e instanceof Error ? e.message : e)); }
+    if (!confirm(`Delete ${selectedIds.size} selected question${selectedIds.size !== 1 ? "s" : ""}?`)) return;
+    try {
+      await removeQuestions([...selectedIds]);
+      setSelectedIds(new Set());
+      loadQuestions();
+    } catch (e) {
+      alert("Delete failed: " + (e instanceof Error ? e.message : e));
+    }
   };
 
   const handleDeleteOne = async (id: string) => {
     if (!confirm("Delete this question?")) return;
-    try { await removeQuestion(id); refetch(); }
-    catch (e) { alert("Delete failed: " + (e instanceof Error ? e.message : e)); }
+    try {
+      await removeQuestion(id);
+      loadQuestions();
+    } catch (e) {
+      alert("Delete failed: " + (e instanceof Error ? e.message : e));
+    }
   };
 
   const handleOpenAdd = () => {
-    if (!selectedCampaignId) { alert("Please select a campaign first."); return; }
+    if (!selectedCampaignId) {
+      alert("Please select a campaign first.");
+      return;
+    }
     setShowAddPanel(true);
-    setTimeout(() => document.getElementById("manual-entry-panel")?.scrollIntoView({ behavior: "smooth" }), 50);
+    setTimeout(() => {
+      document.getElementById("manual-entry-panel")?.scrollIntoView({ behavior: "smooth" });
+    }, 50);
   };
 
-  // Excel bulk upload — flat columns matching DB schema
+  const handleCampaignChange = (id: string) => {
+    setSelectedCampaignId(id);
+    setPage(0);
+    setSelectedIds(new Set());
+    setShowAddPanel(false);
+    setSearchQuery("");
+    setSelectedDifficulty("all");
+  };
+
+  // ── Bulk upload ─────────────────────────────────────────────────────────────
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedCampaignId) return;
@@ -443,12 +514,11 @@ export function QuestionBank() {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws);
 
-      // Accepts both snake_case DB columns AND the friendly aliases
       const parsed: Omit<DBQuestion, "id" | "created_at">[] = rows
         .map((r) => ({
           campaign_id: selectedCampaignId,
           question_text: String(r.question_text ?? r.text ?? "").trim(),
-          difficulty: String(r.difficulty ?? "EASY").toUpperCase() as DBQuestion["difficulty"],
+          difficulty: (String(r.difficulty ?? "EASY").toUpperCase()) as DBQuestion["difficulty"],
           option_a: String(r.option_a ?? "").trim(),
           option_b: String(r.option_b ?? "").trim(),
           option_c: String(r.option_c ?? "").trim() || null,
@@ -458,14 +528,17 @@ export function QuestionBank() {
         }))
         .filter((r) => r.question_text && r.option_a && r.option_b);
 
-      if (parsed.length === 0)
-        throw new Error("No valid rows found. Need columns: question_text, option_a, option_b, correct_option, difficulty");
+      if (parsed.length === 0) {
+        throw new Error(
+          "No valid rows found. Need columns: question_text, option_a, option_b, correct_option, difficulty"
+        );
+      }
 
       const { error } = await supabase.from("questions").insert(parsed);
       if (error) throw error;
 
-      setUploadStatus(`✓ Imported ${parsed.length} questions successfully!`);
-      refetch();
+      setUploadStatus(`✓ Imported ${parsed.length} question${parsed.length !== 1 ? "s" : ""} successfully!`);
+      loadQuestions();
     } catch (e) {
       setUploadStatus("⚠️ " + (e instanceof Error ? e.message : "Import failed"));
     } finally {
@@ -492,17 +565,20 @@ export function QuestionBank() {
     XLSX.writeFile(wb, "questions_template.xlsx");
   };
 
-  // Get options array from a DBQuestion for display
   const getOptions = (q: DBQuestion) =>
     [q.option_a, q.option_b, q.option_c, q.option_d, q.option_e].filter(Boolean) as string[];
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <AdminLayout>
       {editingQuestion && (
         <EditModal
           question={editingQuestion}
           onClose={() => setEditingQuestion(null)}
-          onSaved={() => { refetch(); setEditingQuestion(null); }}
+          onSaved={() => {
+            loadQuestions();
+            setEditingQuestion(null);
+          }}
         />
       )}
 
@@ -518,22 +594,23 @@ export function QuestionBank() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex-1">
               <p className="text-sm text-muted-foreground mb-1">Current Campaign</p>
-              <select
-                value={selectedCampaignId}
-                onChange={(e) => {
-                  setSelectedCampaignId(e.target.value);
-                  setPage(0);
-                  setSelectedIds(new Set());
-                  setShowAddPanel(false);
-                }}
-                className="font-semibold bg-transparent border-none focus:outline-none text-sm"
-                aria-label="Select campaign"
-              >
-                <option value="">— All Campaigns —</option>
-                {(campaigns || []).map((c: Campaign) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+              {campaignsLoading ? (
+                <span className="text-sm text-muted-foreground">Loading campaigns…</span>
+              ) : (
+                <select
+                  value={selectedCampaignId}
+                  onChange={(e) => handleCampaignChange(e.target.value)}
+                  className="font-semibold bg-transparent border-none focus:outline-none text-sm"
+                  aria-label="Select campaign"
+                >
+                  <option value="">— All Campaigns —</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <span className="px-3 py-1 bg-[#4F46E5]/10 text-[#4F46E5] rounded-full text-sm font-semibold">
@@ -555,7 +632,7 @@ export function QuestionBank() {
         {showAddPanel && selectedCampaignId && (
           <AddPanel
             campaignId={selectedCampaignId}
-            onSaved={refetch}
+            onSaved={loadQuestions}
             onClose={() => setShowAddPanel(false)}
           />
         )}
@@ -574,15 +651,27 @@ export function QuestionBank() {
               {["question_text", "option_a", "option_b", "correct_option", "difficulty"].map((c) => (
                 <code key={c} className="bg-muted px-1 rounded text-xs mx-0.5">{c}</code>
               ))}
-              — optional: <code className="bg-muted px-1 rounded text-xs">option_c</code>{" "}
-              <code className="bg-muted px-1 rounded text-xs">option_d</code>{" "}
-              <code className="bg-muted px-1 rounded text-xs">option_e</code>
+              — optional:{" "}
+              {["option_c", "option_d", "option_e"].map((c) => (
+                <code key={c} className="bg-muted px-1 rounded text-xs mx-0.5">{c}</code>
+              ))}
             </p>
             <p className="text-xs text-muted-foreground mb-4">
               <strong>correct_option</strong> = letter of the correct answer (A, B, C, D, or E)
             </p>
+            {selectedCampaignId && (
+              <p className="text-xs text-[#4F46E5] font-medium mb-3">
+                📁 Uploading into:{" "}
+                <strong>{campaigns.find((c) => c.id === selectedCampaignId)?.name ?? "Selected Campaign"}</strong>
+                {" "}— any campaign_id column in your file will be ignored.
+              </p>
+            )}
             {uploadStatus && (
-              <p className={`text-sm mb-3 ${uploadStatus.startsWith("✓") ? "text-[#10B981]" : "text-[#EF4444]"}`}>
+              <p
+                className={`text-sm mb-3 ${
+                  uploadStatus.startsWith("✓") ? "text-[#10B981]" : "text-[#EF4444]"
+                }`}
+              >
                 {uploadStatus}
               </p>
             )}
@@ -595,10 +684,15 @@ export function QuestionBank() {
                     : "bg-[#4F46E5] hover:bg-[#4338CA] text-white"
                 }`}
               >
-                {uploading
-                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading…</>
-                  : <><Upload className="w-4 h-4" /> Upload File</>
-                }
+                {uploading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" /> Uploading…
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4" /> Upload File
+                  </>
+                )}
                 <input
                   id="file-upload"
                   type="file"
@@ -629,7 +723,10 @@ export function QuestionBank() {
               type="text"
               placeholder="Search questions…"
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(0);
+              }}
               className="w-full h-12 pl-10 pr-4 rounded-lg border border-border bg-input-background focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/20 focus:border-[#4F46E5]"
             />
           </div>
@@ -637,9 +734,14 @@ export function QuestionBank() {
             {["all", "EASY", "MEDIUM", "HARD"].map((d) => (
               <button
                 key={d}
-                onClick={() => { setSelectedDifficulty(d); setPage(0); }}
+                onClick={() => {
+                  setSelectedDifficulty(d);
+                  setPage(0);
+                }}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  selectedDifficulty === d ? "bg-[#4F46E5] text-white" : "border-2 border-border hover:border-[#4F46E5]"
+                  selectedDifficulty === d
+                    ? "bg-[#4F46E5] text-white"
+                    : "border-2 border-border hover:border-[#4F46E5]"
                 }`}
               >
                 {d === "all" ? "All" : d}
@@ -653,10 +755,16 @@ export function QuestionBank() {
           <div className="bg-[#4F46E5] text-white rounded-lg px-6 py-3 mb-4 flex items-center justify-between">
             <span className="font-semibold">{selectedIds.size} selected</span>
             <div className="flex gap-2">
-              <button onClick={handleDeleteSelected} className="px-4 py-2 bg-[#EF4444] hover:bg-[#DC2626] rounded-lg font-medium">
+              <button
+                onClick={handleDeleteSelected}
+                className="px-4 py-2 bg-[#EF4444] hover:bg-[#DC2626] rounded-lg font-medium"
+              >
                 Delete Selected
               </button>
-              <button onClick={() => setSelectedIds(new Set())} className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg font-medium">
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg font-medium"
+              >
                 Deselect
               </button>
             </div>
@@ -681,8 +789,10 @@ export function QuestionBank() {
             <div className="col-span-2">Actions</div>
           </div>
 
-          {loading ? (
-            <div className="p-8 text-center text-muted-foreground text-sm animate-pulse">Loading questions…</div>
+          {loadingQuestions ? (
+            <div className="p-8 text-center text-muted-foreground text-sm animate-pulse">
+              Loading questions…
+            </div>
           ) : questions.length === 0 ? (
             <div className="p-12 text-center">
               <BookOpen className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-40" />
@@ -706,7 +816,7 @@ export function QuestionBank() {
                       checked={selectedIds.has(q.id)}
                       onChange={() => toggleId(q.id)}
                       className="w-4 h-4 rounded border-border"
-                      aria-label={`Select ${q.question_text}`}
+                      aria-label={`Select question`}
                     />
                   </div>
                   <div className="col-span-5">
@@ -715,13 +825,17 @@ export function QuestionBank() {
                       onClick={() => setExpandedId(expandedId === q.id ? null : q.id)}
                       className="text-xs text-muted-foreground hover:text-foreground mt-1 flex items-center gap-1"
                     >
-                      {expandedId === q.id
-                        ? <><ChevronUp className="w-3 h-3" /> Hide options</>
-                        : <><ChevronDown className="w-3 h-3" /> View options</>}
+                      {expandedId === q.id ? (
+                        <><ChevronUp className="w-3 h-3" /> Hide options</>
+                      ) : (
+                        <><ChevronDown className="w-3 h-3" /> View options</>
+                      )}
                     </button>
                   </div>
                   <div className="col-span-2 flex items-center">
-                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${DIFFICULTY_COLORS[q.difficulty]}`}>
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-semibold ${DIFFICULTY_COLORS[q.difficulty]}`}
+                    >
                       {q.difficulty}
                     </span>
                   </div>
@@ -758,7 +872,9 @@ export function QuestionBank() {
                           <div
                             key={i}
                             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
-                              isCorrect ? "bg-[#10B981]/10 text-[#10B981] font-medium" : "bg-muted"
+                              isCorrect
+                                ? "bg-[#10B981]/10 text-[#10B981] font-medium"
+                                : "bg-muted"
                             }`}
                           >
                             <span className="font-bold">{letter}.</span>
@@ -800,6 +916,7 @@ export function QuestionBank() {
           </div>
         </div>
 
+        {/* FAB */}
         {!showAddPanel && (
           <button
             onClick={handleOpenAdd}
