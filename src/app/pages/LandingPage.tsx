@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, Users, Lock } from "lucide-react";
 import { useState } from "react";
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw, Search, Download } from "lucide-react";
-import { supabase } from "./RegistrationPage";
+import { supabase } from "../../lib/supabase";
 
 interface LeaderboardEntry {
   id: string;
@@ -40,7 +40,7 @@ export function LeaderboardPage() {
   const fetchLeaderboardData = async () => {
     setLoading(true);
     try {
-      const userId = localStorage.getItem("sb_user_id");
+      const responseId = localStorage.getItem("latest_response_id");
       const now = new Date();
       let startDate = new Date();
 
@@ -59,45 +59,31 @@ export function LeaderboardPage() {
         startDate.setHours(0, 0, 0, 0);
       }
 
-      // Fetch all responses for the campaign in the date range
-      const { data: responses, error } = await supabase
-        .from("responses")
-        .select(
-          `
-          id,
-          score,
-          time_taken,
-          completed_at,
-          participants (
-            id,
-            full_name,
-            email
-          )
-        `
-        )
+      // Fetch leaderboard entries for the campaign in the date range
+      const { data: lbEntries, error } = await supabase
+        .from("leaderboard")
+        .select("id, participant_name, participant_email, participant_mobile, score, total, time_taken, completed_at, created_at, rank")
         .eq("campaign_id", campaignId)
         .gte("completed_at", startDate.toISOString())
         .lte("completed_at", now.toISOString())
-        .order("score", { ascending: false })
-        .order("time_taken", { ascending: true });
+        .order("rank", { ascending: true })
+        .limit(100);
 
       if (error) throw error;
 
       // Transform data and calculate statistics
-      const entries: LeaderboardEntry[] = (responses || [])
-        .map((r: any) => ({
-          id: r.id,
-          full_name: r.participants?.full_name || "Anonymous",
-          score: r.score || 0,
-          total_questions: 5, // Default or fetch from campaign
-          time_taken: r.time_taken || 0,
-          completed_at: r.completed_at,
-        }))
-        .slice(0, 100); // Top 100
+      const entries: LeaderboardEntry[] = (lbEntries || []).map((r: any) => ({
+        id: r.id,
+        full_name: r.participant_name || "Anonymous",
+        score: r.score || 0,
+        total_questions: r.total ?? 0,
+        time_taken: r.time_taken || 0,
+        completed_at: r.completed_at || r.created_at,
+      }));
 
       // Calculate user's rank and stats
-      const userEntry = entries.find((e) => e.id === userId);
-      const userRank = userEntry ? entries.findIndex((e) => e.id === userId) + 1 : 0;
+      const userEntry = entries.find((e) => e.id === responseId);
+      const userRank = userEntry ? entries.findIndex((e) => e.id === responseId) + 1 : 0;
       const userScore = userEntry?.score || 0;
       const userTime = userEntry?.time_taken || 0;
 
@@ -180,6 +166,8 @@ export function LeaderboardPage() {
             <button
               onClick={() => navigate(`/campaign/${campaignId}/results`)}
               className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted"
+              title="Go back to results"
+              aria-label="Back to results"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -189,6 +177,8 @@ export function LeaderboardPage() {
             onClick={fetchLeaderboardData}
             disabled={loading}
             className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted disabled:opacity-50"
+            title="Refresh leaderboard"
+            aria-label="Refresh leaderboard"
           >
             <RefreshCw className={`w-5 h-5 ${loading ? "animate-spin" : ""}`} />
           </button>
@@ -218,16 +208,16 @@ export function LeaderboardPage() {
         </div>
 
         {/* User's Rank Card */}
-        {leaderboardData.userRank > 0 ? (
+        {leaderboardData && leaderboardData.userRank > 0 ? (
           <div className="bg-[#4F46E5]/10 border-l-4 border-[#4F46E5] rounded-lg p-4 mb-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Your Rank</p>
-                <p className="text-2xl font-bold text-foreground">#{leaderboardData.userRank}</p>
+                <p className="text-2xl font-bold text-foreground">#{leaderboardData?.userRank}</p>
               </div>
               <div className="text-right">
-                <p className="text-sm font-semibold">{leaderboardData.userScore}/5</p>
-                <p className="text-xs text-muted-foreground">{formatTime(leaderboardData.userTime)}</p>
+                <p className="text-sm font-semibold">{leaderboardData?.userScore}/5</p>
+                <p className="text-xs text-muted-foreground">{leaderboardData && formatTime(leaderboardData.userTime)}</p>
               </div>
             </div>
           </div>
@@ -243,9 +233,9 @@ export function LeaderboardPage() {
             <div className="flex items-end justify-center gap-4 mb-8">
               {/* 2nd Place */}
               {top3[1] && (
-                <div className="flex flex-col items-center" style={{ width: "30%" }}>
+                <div className="flex flex-col items-center w-[30%]">
                   <div className="text-3xl mb-2">🥈</div>
-                  <div className="w-full bg-gradient-to-b from-gray-300 to-gray-400 rounded-t-lg p-4 text-center" style={{ height: "100px" }}>
+                  <div className="w-full bg-gradient-to-b from-gray-300 to-gray-400 rounded-t-lg p-4 text-center h-[100px]">
                     <p className="font-bold text-sm truncate text-white">{top3[1].full_name}</p>
                     <p className="text-xs font-semibold text-white mt-1">{top3[1].score}/{top3[1].total_questions}</p>
                     <p className="text-xs text-white/80">{formatTime(top3[1].time_taken)}</p>
@@ -258,9 +248,9 @@ export function LeaderboardPage() {
 
               {/* 1st Place */}
               {top3[0] && (
-                <div className="flex flex-col items-center" style={{ width: "35%" }}>
+                <div className="flex flex-col items-center w-[35%]">
                   <div className="text-4xl mb-2">👑</div>
-                  <div className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 rounded-t-lg p-4 text-center" style={{ height: "140px" }}>
+                  <div className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 rounded-t-lg p-4 text-center h-[140px]">
                     <p className="font-bold text-sm truncate text-gray-900">{top3[0].full_name}</p>
                     <p className="text-xs font-semibold text-gray-900 mt-1">{top3[0].score}/{top3[0].total_questions}</p>
                     <p className="text-xs text-gray-800">{formatTime(top3[0].time_taken)}</p>
@@ -273,9 +263,9 @@ export function LeaderboardPage() {
 
               {/* 3rd Place */}
               {top3[2] && (
-                <div className="flex flex-col items-center" style={{ width: "30%" }}>
+                <div className="flex flex-col items-center w-[30%]">
                   <div className="text-3xl mb-2">🥉</div>
-                  <div className="w-full bg-gradient-to-b from-orange-300 to-orange-500 rounded-t-lg p-4 text-center" style={{ height: "80px" }}>
+                  <div className="w-full bg-gradient-to-b from-orange-300 to-orange-500 rounded-t-lg p-4 text-center h-[80px]">
                     <p className="font-bold text-sm truncate text-white">{top3[2].full_name}</p>
                     <p className="text-xs font-semibold text-white mt-1">{top3[2].score}/{top3[2].total_questions}</p>
                     <p className="text-xs text-white/80">{formatTime(top3[2].time_taken)}</p>
@@ -324,7 +314,7 @@ export function LeaderboardPage() {
               <div
                 key={entry.id}
                 className={`grid grid-cols-12 gap-4 px-4 py-3 border-b border-border last:border-b-0 ${
-                  leaderboardData.userRank === idx + 4 ? "bg-[#4F46E5]/5" : ""
+                  leaderboardData?.userRank === idx + 4 ? "bg-[#4F46E5]/5" : ""
                 }`}
               >
                 <div className="col-span-2 font-semibold">#{idx + 4}</div>
@@ -372,17 +362,17 @@ export function LeaderboardPage() {
           <div className="bg-card border border-border rounded-xl p-4 text-center">
             <div className="text-2xl mb-1">👥</div>
             <p className="text-xs text-muted-foreground mb-1">Total</p>
-            <p className="text-lg font-bold">{leaderboardData.totalParticipants}</p>
+            <p className="text-lg font-bold">{leaderboardData?.totalParticipants}</p>
           </div>
           <div className="bg-card border border-border rounded-xl p-4 text-center">
             <div className="text-2xl mb-1">📊</div>
             <p className="text-xs text-muted-foreground mb-1">Avg Score</p>
-            <p className="text-lg font-bold">{leaderboardData.avgScore}/5</p>
+            <p className="text-lg font-bold">{leaderboardData?.avgScore}/5</p>
           </div>
           <div className="bg-card border border-border rounded-xl p-4 text-center">
             <div className="text-2xl mb-1">⚡</div>
             <p className="text-xs text-muted-foreground mb-1">Fastest</p>
-            <p className="text-lg font-bold">{formatTime(leaderboardData.fastestTime)}</p>
+            <p className="text-lg font-bold">{leaderboardData && formatTime(leaderboardData.fastestTime)}</p>
           </div>
         </div>
       </div>

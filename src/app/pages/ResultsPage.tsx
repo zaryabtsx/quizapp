@@ -1,219 +1,203 @@
-import { useNavigate, useParams, useLocation } from "react-router";
-import { Clock, ChevronDown, ChevronUp, Share2, Trophy, ArrowLeft } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
+import { Trophy, Clock, CheckCircle, XCircle, RotateCcw, BarChart2 } from "lucide-react";
+import { useStore } from "../../store/StoreContext";
+import { QUESTIONS } from "../../store/questions";
+import { formatTime } from "../../store/utils";
+import { Participant } from "../../types";
 
 export function ResultsPage() {
   const navigate = useNavigate();
-  const { campaignId } = useParams();
+  const { campaignId } = useParams<{ campaignId: string }>();
   const location = useLocation();
-  const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set());
+  const { participants, clearCurrentSession } = useStore();
 
-  // Mock results based on quiz answers
-  const correctAnswers = ["B", "C", "D", "C", "C"];
-  const score = 4;
-  const totalQuestions = 5;
-  const percentage = (score / totalQuestions) * 100;
-  const timeElapsed = 155; // 2:35
-  const rank = 3;
-  const previousRank = 7;
+  const { participantId, answers, timeSec } = (location.state as {
+    participantId: number;
+    answers: Record<number, string>;
+    timeSec: number;
+  }) ?? {};
 
-  const questions = [
-    { id: 1, text: "What is the capital of France?", userAnswer: "B", correctAnswer: "B", isCorrect: true },
-    { id: 2, text: "Which planet is known as the Red Planet?", userAnswer: "C", correctAnswer: "C", isCorrect: true },
-    { id: 3, text: "What is the largest ocean on Earth?", userAnswer: "D", correctAnswer: "D", isCorrect: true },
-    { id: 4, text: "Who painted the Mona Lisa?", userAnswer: "B", correctAnswer: "C", isCorrect: false, explanation: "Leonardo da Vinci painted the Mona Lisa between 1503 and 1519." },
-    { id: 5, text: "What is the smallest prime number?", userAnswer: "C", correctAnswer: "C", isCorrect: true }
-  ];
+  const [storedParticipant, setStoredParticipant] = useState<Participant | null>(null);
 
-  const toggleQuestion = (id: number) => {
-    setExpandedQuestions(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(id)) {
-        newSet.delete(id);
-      } else {
-        newSet.add(id);
+  useEffect(() => {
+    if (!participantId) {
+      const saved = localStorage.getItem("latest_quiz_result");
+      if (saved) {
+        try {
+          setStoredParticipant(JSON.parse(saved));
+        } catch {
+          setStoredParticipant(null);
+        }
       }
-      return newSet;
-    });
+    }
+  }, [participantId]);
+
+  const participant = participants.find((p:any) => p.id === participantId) || storedParticipant;
+  const rank = participant ? participants.findIndex((p:any) => p.id === participant?.id) + 1 : null;
+
+  const score = participant?.score ?? 0;
+  const total = QUESTIONS.length;
+  const pct = Math.round((score / total) * 100);
+
+  const emoji =
+    score === total ? "🏆" :
+    score >= 4 ? "🎉" :
+    score >= 3 ? "😊" :
+    score >= 2 ? "😐" : "😔";
+
+  const title =
+    score === total ? "Perfect Score!" :
+    score >= 4 ? "Excellent Work!" :
+    score >= 3 ? "Well Done!" :
+    score >= 2 ? "Good Effort!" : "Keep Practicing!";
+
+  const handlePlayAgain = () => {
+    clearCurrentSession();
+    navigate(`/campaign/${campaignId}/register`);
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins} minute${mins !== 1 ? 's' : ''} ${secs} second${secs !== 1 ? 's' : ''}`;
-  };
-
-  const getRankMedal = (rank: number) => {
-    if (rank === 1) return "🥇";
-    if (rank === 2) return "🥈";
-    if (rank === 3) return "🥉";
-    return "🏆";
-  };
+  if (!participant) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-muted-foreground mb-4">No result data found.</p>
+          <button
+            onClick={() => navigate(`/campaign/${campaignId}/register`)}
+            className="text-[#4F46E5] underline"
+          >
+            Start over
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background px-6 py-8">
-      <div className="max-w-2xl mx-auto">
-        {/* Score Card */}
-        <div className="text-center mb-8">
-          <div className="relative inline-flex items-center justify-center mb-4">
-            {/* Circular Progress */}
-            <svg className="w-32 h-32 transform -rotate-90">
+      <div className="max-w-lg mx-auto">
+        {/* Score card */}
+        <div className="bg-card border border-border rounded-2xl p-7 text-center mb-5">
+          <div className="text-5xl mb-4">{emoji}</div>
+
+          {/* Circular score */}
+          <div className="relative w-24 h-24 mx-auto mb-4">
+            <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
+              <circle cx="48" cy="48" r="40" fill="none" stroke="currentColor" strokeWidth="8" className="text-muted" />
               <circle
-                cx="64"
-                cy="64"
-                r="56"
-                stroke="#E5E7EB"
-                strokeWidth="8"
+                cx="48" cy="48" r="40"
                 fill="none"
-              />
-              <circle
-                cx="64"
-                cy="64"
-                r="56"
                 stroke="#4F46E5"
                 strokeWidth="8"
-                fill="none"
-                strokeDasharray={`${2 * Math.PI * 56}`}
-                strokeDashoffset={`${2 * Math.PI * 56 * (1 - percentage / 100)}`}
                 strokeLinecap="round"
-                className="transition-all duration-1000"
+                strokeDasharray={`${2 * Math.PI * 40}`}
+                strokeDashoffset={`${2 * Math.PI * 40 * (1 - pct / 100)}`}
+                className="transition-all duration-700"
               />
             </svg>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center">
-                <div className="text-4xl font-bold text-foreground">{score}/{totalQuestions}</div>
-              </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-2xl font-bold">{score}</span>
+              <span className="text-xs text-muted-foreground">/{total}</span>
             </div>
           </div>
-          <p className="text-sm text-muted-foreground mb-4">Correct Answers</p>
-          
-          {/* Time Badge */}
-          <div className="inline-flex items-center gap-2 bg-card border border-border px-4 py-2 rounded-full">
-            <Clock className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm">Completed in {formatTime(timeElapsed)}</span>
-          </div>
-        </div>
 
-        {/* Ranking Card */}
-        <div className="bg-gradient-to-r from-[#4F46E5]/10 to-[#F59E0B]/10 border-2 border-[#4F46E5]/20 rounded-2xl p-6 mb-8">
-          <div className="flex items-center gap-4">
-            <div className="text-5xl">{getRankMedal(rank)}</div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold mb-1">Your Rank: #{rank} on Today's Leaderboard</h3>
-              {previousRank > rank && (
-                <p className="text-sm text-[#10B981] flex items-center gap-1">
-                  <span>↑</span> Improved from #{previousRank}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+          <h1 className="text-2xl font-bold mb-1">{title}</h1>
+          <p className="text-muted-foreground text-sm mb-5">
+            You ranked{" "}
+            <span className="text-[#4F46E5] font-bold">#{rank}</span> on the leaderboard
+          </p>
 
-        {/* Performance Breakdown */}
-        <div className="mb-8">
-          <h3 className="text-lg font-semibold mb-4">Question Summary</h3>
-          <div className="bg-card border border-border rounded-2xl overflow-hidden">
-            {questions.map((q, index) => (
-              <div key={q.id} className={index !== questions.length - 1 ? "border-b border-border" : ""}>
-                <button
-                  onClick={() => !q.isCorrect && toggleQuestion(q.id)}
-                  className="w-full px-4 py-3 flex items-center gap-3 hover:bg-muted/50 transition-colors text-left"
-                >
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    q.isCorrect ? "bg-[#10B981]/10" : "bg-[#EF4444]/10"
-                  }`}>
-                    {q.isCorrect ? (
-                      <span className="text-[#10B981] text-sm">✓</span>
-                    ) : (
-                      <span className="text-[#EF4444] text-sm">✕</span>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm truncate">{q.text}</p>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {q.isCorrect ? (
-                      <span className="text-xs px-2 py-1 bg-[#10B981]/10 text-[#10B981] rounded-full">
-                        Correct: {q.correctAnswer}
-                      </span>
-                    ) : (
-                      <span className="text-xs px-2 py-1 bg-[#EF4444]/10 text-[#EF4444] rounded-full">
-                        You: {q.userAnswer} • Correct: {q.correctAnswer}
-                      </span>
-                    )}
-                    {!q.isCorrect && (
-                      expandedQuestions.has(q.id) ? (
-                        <ChevronUp className="w-4 h-4 text-muted-foreground" />
-                      ) : (
-                        <ChevronDown className="w-4 h-4 text-muted-foreground" />
-                      )
-                    )}
-                  </div>
-                </button>
-                {!q.isCorrect && expandedQuestions.has(q.id) && q.explanation && (
-                  <div className="px-4 py-3 bg-muted/30 border-t border-border">
-                    <p className="text-sm text-muted-foreground">{q.explanation}</p>
-                  </div>
-                )}
+          {/* Stats row */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { icon: <Trophy className="w-4 h-4" />, label: "Score", val: `${score}/${total}` },
+              { icon: <Clock className="w-4 h-4" />, label: "Time", val: formatTime(participant.timeSec) },
+              { icon: <BarChart2 className="w-4 h-4" />, label: "Rank", val: `#${rank}` },
+            ].map((s) => (
+              <div key={s.label} className="bg-muted/50 rounded-xl p-3">
+                <div className="flex justify-center mb-1 text-[#4F46E5]">{s.icon}</div>
+                <div className="text-lg font-bold">{s.val}</div>
+                <div className="text-xs text-muted-foreground">{s.label}</div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Call to Actions */}
-        <div className="space-y-3 mb-8">
-          <button
-            onClick={() => navigate(`/campaign/${campaignId}/leaderboard`)}
-            className="w-full h-13 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-semibold transition-colors flex items-center justify-center gap-2"
-          >
-            <Trophy className="w-5 h-5" />
-            View Full Leaderboard
-          </button>
-          
-          <button
-            onClick={() => {
-              // Share functionality
-              if (navigator.share) {
-                navigator.share({
-                  title: 'My Quiz Score',
-                  text: `I scored ${score}/${totalQuestions} on Summer Quiz Challenge 2024!`,
-                });
-              }
-            }}
-            className="w-full h-13 border-2 border-border hover:border-[#4F46E5] rounded-xl font-semibold transition-colors flex items-center justify-center gap-2"
-          >
-            <Share2 className="w-5 h-5" />
-            Share My Score
-          </button>
-          
-          <button
-            onClick={() => navigate(`/campaign/${campaignId}`)}
-            className="w-full text-center text-muted-foreground hover:text-foreground py-2 flex items-center justify-center gap-1"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back to Campaign
-          </button>
+        {/* Answer breakdown */}
+        <div className="bg-card border border-border rounded-2xl p-5 mb-5">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
+            Answer Review
+          </h2>
+          <div className="space-y-3">
+            {QUESTIONS.map((q:any, i:any) => {
+              const userAnswer = answers?.[i];
+              const correct = userAnswer === q.correctAnswer;
+              const userOpt = q.options.find((o:any) => o.letter === userAnswer);
+              const correctOpt = q.options.find((o:any) => o.letter === q.correctAnswer);
+
+              return (
+                <div
+                  key={q.id}
+                  className={`p-4 rounded-xl border ${
+                    correct
+                      ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/10"
+                      : "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex-shrink-0">
+                      {correct ? (
+                        <CheckCircle className="w-5 h-5 text-emerald-500" />
+                      ) : (
+                        <XCircle className="w-5 h-5 text-red-400" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium mb-1">{q.text}</p>
+                      {!correct && userOpt && (
+                        <p className="text-xs text-red-500">
+                          Your answer: <span className="font-semibold">{userOpt.text}</span>
+                        </p>
+                      )}
+                      {!correct && (
+                        <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                          Correct: <span className="font-semibold">{correctOpt?.text}</span>
+                        </p>
+                      )}
+                    </div>
+                    <span
+                      className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                        q.difficulty === "EASY"
+                          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                          : q.difficulty === "MEDIUM"
+                          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                          : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                      }`}
+                    >
+                      {q.difficulty}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Social Share Preview */}
-        <div className="bg-card border border-border rounded-2xl p-4">
-          <p className="text-sm font-semibold mb-3">Share on social media</p>
-          <div className="bg-gradient-to-r from-[#4F46E5] to-[#7C3AED] rounded-lg p-4 mb-3 text-white text-center">
-            <p className="text-lg font-bold">I scored {score}/{totalQuestions}!</p>
-            <p className="text-sm opacity-90">Summer Quiz Challenge 2024</p>
-          </div>
-          <div className="flex gap-2">
-            <button className="flex-1 py-2 bg-[#25D366] hover:bg-[#20BA5A] text-white rounded-lg font-medium transition-colors">
-              WhatsApp
-            </button>
-            <button className="flex-1 py-2 bg-[#1DA1F2] hover:bg-[#1A8CD8] text-white rounded-lg font-medium transition-colors">
-              Twitter
-            </button>
-            <button className="flex-1 py-2 bg-muted hover:bg-muted/80 rounded-lg font-medium transition-colors">
-              Copy Link
-            </button>
-          </div>
-        </div>
+        {/* Actions */}
+        <button
+          onClick={() => navigate("/admin/leaderboard")}
+          className="w-full h-12 border-2 border-[#4F46E5] text-[#4F46E5] hover:bg-[#4F46E5]/5 rounded-xl font-semibold transition-colors mb-3 flex items-center justify-center gap-2"
+        >
+          <Trophy className="w-5 h-5" />
+          View Full Leaderboard
+        </button>
+        <button
+          onClick={handlePlayAgain}
+          className="w-full h-12 border border-border hover:border-[#4F46E5] text-muted-foreground hover:text-foreground rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <RotateCcw className="w-4 h-4" />
+          Play Again
+        </button>
       </div>
     </div>
   );

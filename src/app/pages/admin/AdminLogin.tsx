@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router-dom";
 import { Mail, Lock, Eye, EyeOff } from "lucide-react";
 
 export function AdminLogin() {
@@ -78,6 +78,7 @@ export function AdminLogin() {
           </div>
 
           <div className="flex gap-2 justify-center mb-6">
+            <label htmlFor="otp-0" className="sr-only">OTP Code</label>
             {otp.map((digit, index) => (
               <input
                 key={index}
@@ -89,6 +90,7 @@ export function AdminLogin() {
                 onChange={(e) => handleOtpChange(index, e.target.value)}
                 onKeyDown={(e) => handleOtpKeyDown(index, e)}
                 className="w-12 h-14 text-center text-xl font-semibold border-2 border-border rounded-lg focus:border-[#4F46E5] focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/20"
+                aria-label={`OTP digit ${index + 1}`}
               />
             ))}
           </div>
@@ -96,11 +98,15 @@ export function AdminLogin() {
           <button
             onClick={() => navigate("/admin/dashboard")}
             className="w-full h-12 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-lg font-semibold transition-colors mb-3"
+            title="Verify OTP"
           >
             Verify
           </button>
 
-          <button className="w-full text-center text-sm text-[#4F46E5] hover:text-[#4338CA]">
+          <button 
+            className="w-full text-center text-sm text-[#4F46E5] hover:text-[#4338CA]"
+            title="Resend verification code"
+          >
             Resend code
           </button>
         </div>

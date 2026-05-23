@@ -1,4 +1,4 @@
-import { useNavigate, useLocation } from "react-router";
+import { useNavigate, useLocation } from "react-router-dom";
 import { LayoutDashboard, Target, HelpCircle, Trophy, Settings, LogOut, Bell, ChevronDown } from "lucide-react";
 import { ReactNode } from "react";
 
@@ -89,7 +89,11 @@ export function AdminLayout({ children }: AdminLayoutProps) {
             </button>
 
             {/* Notifications */}
-            <button className="relative w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted">
+            <button 
+              className="relative w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted\"
+              title="User menu"
+              aria-label="Open user menu"
+            >
               <Bell className="w-5 h-5" />
               <span className="absolute top-1 right-1 w-2 h-2 bg-[#EF4444] rounded-full"></span>
             </button>

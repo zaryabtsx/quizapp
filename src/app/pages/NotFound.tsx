@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router-dom";
 import { Search } from "lucide-react";
 
 export function NotFound() {
