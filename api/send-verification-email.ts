@@ -16,8 +16,11 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
+  // Use a verified sender email from environment, fallback to Resend test email (dev only)
+  const senderEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+
   const body = {
-    from: "onboarding@resend.dev",
+    from: senderEmail,
     to: email,
     subject: "Your quiz verification code",
     html: `
