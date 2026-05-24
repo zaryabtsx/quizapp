@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Check, Lock, ArrowLeft } from "lucide-react";
-import { useStore } from "../../store/StoreContext";
-import { saveParticipantRegistration } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
-import { CurrentUser } from "../../types";
+import { useStore } from "../../../store/StoreContext";
+import { saveParticipantRegistration } from "../../../lib/api";
+import { supabase } from "../../../lib/supabase";
+import { CurrentUser } from "../../../types";
 
 type FieldErrors = Record<string, string>;
 
@@ -16,75 +16,75 @@ const COUNTRY_FORMATS: Record<string, { length: number; regex: RegExp; example: 
   "+974": { length: 8, regex: /^[3-7]\d{7}$/, example: "33123456" },
   "+973": { length: 8, regex: /^[369]\d{7}$/, example: "36001234" },
   "+967": { length: 9, regex: /^[17]\d{8}$/, example: "712345678" },
-  "+92":  { length: 10, regex: /^3\d{9}$/,          example: "3001234567" },
-  "+91":  { length: 10, regex: /^[6-9]\d{9}$/,       example: "9876543210" },
-  "+880": { length: 10, regex: /^1[3-9]\d{8}$/,      example: "1712345678" },
-  "+94":  { length: 9,  regex: /^[7]\d{8}$/,         example: "712345678"  },
-  "+977": { length: 10, regex: /^9[78]\d{8}$/,       example: "9841234567" },
-  "+93":  { length: 9,  regex: /^[7]\d{8}$/,         example: "701234567"  },
+  "+92":  { length: 10, regex: /^3\d{9}$/, example: "3001234567" },
+  "+91":  { length: 10, regex: /^[6-9]\d{9}$/, example: "9876543210" },
+  "+880": { length: 10, regex: /^1[3-9]\d{8}$/, example: "1712345678" },
+  "+94":  { length: 9, regex: /^[7]\d{8}$/, example: "712345678" },
+  "+977": { length: 10, regex: /^9[78]\d{8}$/, example: "9841234567" },
+  "+93":  { length: 9, regex: /^[7]\d{8}$/, example: "701234567" },
   "+1":   { length: 10, regex: /^[2-9]\d{2}[2-9]\d{6}$/, example: "2025551234" },
-  "+44":  { length: 10, regex: /^[1-9]\d{9}$/,  example: "2071838750" },
-  "+49":  { length: 10, regex: /^[1-9]\d{9}$/,  example: "1512345678" },
-  "+33":  { length: 9,  regex: /^[6-7]\d{8}$/,  example: "612345678"  },
-  "+39":  { length: 10, regex: /^3\d{9}$/,       example: "3123456789" },
-  "+34":  { length: 9,  regex: /^[6-7]\d{8}$/,  example: "612345678"  },
-  "+31":  { length: 9,  regex: /^6\d{8}$/,       example: "612345678"  },
-  "+32":  { length: 9,  regex: /^4\d{8}$/,       example: "412345678"  },
-  "+41":  { length: 9,  regex: /^7[5-9]\d{7}$/,  example: "751234567"  },
-  "+43":  { length: 10, regex: /^6\d{9}$/,       example: "6501234567" },
-  "+48":  { length: 9,  regex: /^[4-8]\d{8}$/,   example: "512345678"  },
-  "+30":  { length: 10, regex: /^6\d{9}$/,        example: "6912345678" },
-  "+351": { length: 9,  regex: /^9[1-6]\d{7}$/,  example: "912345678"  },
-  "+46":  { length: 9,  regex: /^7[02369]\d{7}$/, example: "701234567"  },
-  "+47":  { length: 8,  regex: /^[49]\d{7}$/,    example: "91234567"   },
-  "+45":  { length: 8,  regex: /^[2-9]\d{7}$/,   example: "20123456"   },
-  "+358": { length: 9,  regex: /^4\d{8}$/,        example: "412345678"  },
-  "+353": { length: 9,  regex: /^8[5-9]\d{7}$/,  example: "851234567"  },
-  "+420": { length: 9,  regex: /^[67]\d{8}$/,    example: "601234567"  },
-  "+36":  { length: 9,  regex: /^[237]\d{8}$/,   example: "201234567"  },
-  "+40":  { length: 9,  regex: /^7[2-8]\d{7}$/,  example: "721234567"  },
-  "+7":   { length: 10, regex: /^9\d{9}$/,        example: "9123456789" },
-  "+86":  { length: 11, regex: /^1[3-9]\d{9}$/,  example: "13123456789" },
-  "+81":  { length: 10, regex: /^[7-9]0\d{8}$/,  example: "7012345678"  },
-  "+82":  { length: 10, regex: /^1[0-9]\d{8}$/,  example: "1012345678"  },
-  "+886": { length: 9,  regex: /^9\d{8}$/,        example: "912345678"   },
-  "+852": { length: 8,  regex: /^[5-9]\d{7}$/,   example: "51234567"    },
-  "+853": { length: 8,  regex: /^6\d{7}$/,        example: "61234567"    },
-  "+60":  { length: 10, regex: /^1\d{9}$/,        example: "1123456789"  },
-  "+65":  { length: 8,  regex: /^[89]\d{7}$/,    example: "81234567"    },
-  "+66":  { length: 9,  regex: /^[689]\d{8}$/,   example: "812345678"   },
-  "+62":  { length: 11, regex: /^8\d{10}$/,       example: "81234567890" },
-  "+63":  { length: 10, regex: /^9\d{9}$/,        example: "9123456789"  },
-  "+84":  { length: 9,  regex: /^[35789]\d{8}$/,  example: "912345678"   },
-  "+95":  { length: 9,  regex: /^9\d{8}$/,        example: "912345678"   },
-  "+855": { length: 9,  regex: /^[1-9]\d{8}$/,   example: "123456789"   },
-  "+90":  { length: 10, regex: /^5\d{9}$/,        example: "5321234567"  },
-  "+98":  { length: 10, regex: /^9\d{9}$/,        example: "9123456789"  },
-  "+962": { length: 9,  regex: /^7[789]\d{7}$/,  example: "791234567"   },
-  "+961": { length: 8,  regex: /^[37]\d{7}$/,    example: "71234567"    },
-  "+963": { length: 9,  regex: /^9[4-6]\d{7}$/,  example: "944567890"   },
-  "+972": { length: 9,  regex: /^5[0-9]\d{7}$/,  example: "501234567"   },
-  "+964": { length: 10, regex: /^7[3-9]\d{8}$/,  example: "7301234567"  },
-  "+20":  { length: 10, regex: /^1[0-2]\d{8}$/,  example: "1012345678"  },
-  "+27":  { length: 9,  regex: /^[6-8]\d{8}$/,   example: "812345678"   },
-  "+234": { length: 10, regex: /^[7-9]\d{9}$/,   example: "8123456789"  },
-  "+254": { length: 9,  regex: /^7\d{8}$/,        example: "712345678"   },
-  "+251": { length: 9,  regex: /^9\d{8}$/,        example: "912345678"   },
-  "+255": { length: 9,  regex: /^7[5-9]\d{7}$/,  example: "751234567"   },
-  "+256": { length: 9,  regex: /^7[1-9]\d{7}$/,  example: "712345678"   },
-  "+233": { length: 9,  regex: /^[235]\d{8}$/,   example: "201234567"   },
-  "+212": { length: 9,  regex: /^6[0-9]\d{7}$/,  example: "612345678"   },
-  "+216": { length: 8,  regex: /^[29]\d{7}$/,    example: "20123456"    },
-  "+213": { length: 9,  regex: /^[567]\d{8}$/,   example: "551234567"   },
-  "+61":  { length: 9,  regex: /^4\d{8}$/,        example: "412345678"   },
-  "+64":  { length: 9,  regex: /^2\d{8}$/,        example: "212345678"   },
+  "+44":  { length: 10, regex: /^[1-9]\d{9}$/, example: "2071838750" },
+  "+49":  { length: 10, regex: /^[1-9]\d{9}$/, example: "1512345678" },
+  "+33":  { length: 9, regex: /^[6-7]\d{8}$/, example: "612345678" },
+  "+39":  { length: 10, regex: /^3\d{9}$/, example: "3123456789" },
+  "+34":  { length: 9, regex: /^[6-7]\d{8}$/, example: "612345678" },
+  "+31":  { length: 9, regex: /^6\d{8}$/, example: "612345678" },
+  "+32":  { length: 9, regex: /^4\d{8}$/, example: "412345678" },
+  "+41":  { length: 9, regex: /^7[5-9]\d{7}$/, example: "751234567" },
+  "+43":  { length: 10, regex: /^6\d{9}$/, example: "6501234567" },
+  "+48":  { length: 9, regex: /^[4-8]\d{8}$/, example: "512345678" },
+  "+30":  { length: 10, regex: /^6\d{9}$/, example: "6912345678" },
+  "+351": { length: 9, regex: /^9[1-6]\d{7}$/, example: "912345678" },
+  "+46":  { length: 9, regex: /^7[02369]\d{7}$/, example: "701234567" },
+  "+47":  { length: 8, regex: /^[49]\d{7}$/, example: "91234567" },
+  "+45":  { length: 8, regex: /^[2-9]\d{7}$/, example: "20123456" },
+  "+358": { length: 9, regex: /^4\d{8}$/, example: "412345678" },
+  "+353": { length: 9, regex: /^8[5-9]\d{7}$/, example: "851234567" },
+  "+420": { length: 9, regex: /^[67]\d{8}$/, example: "601234567" },
+  "+36":  { length: 9, regex: /^[237]\d{8}$/, example: "201234567" },
+  "+40":  { length: 9, regex: /^7[2-8]\d{7}$/, example: "721234567" },
+  "+7":   { length: 10, regex: /^9\d{9}$/, example: "9123456789" },
+  "+86":  { length: 11, regex: /^1[3-9]\d{9}$/, example: "13123456789" },
+  "+81":  { length: 10, regex: /^[7-9]0\d{8}$/, example: "7012345678" },
+  "+82":  { length: 10, regex: /^1[0-9]\d{8}$/, example: "1012345678" },
+  "+886": { length: 9, regex: /^9\d{8}$/, example: "912345678" },
+  "+852": { length: 8, regex: /^[5-9]\d{7}$/, example: "51234567" },
+  "+853": { length: 8, regex: /^6\d{7}$/, example: "61234567" },
+  "+60":  { length: 10, regex: /^1\d{9}$/, example: "1123456789" },
+  "+65":  { length: 8, regex: /^[89]\d{7}$/, example: "81234567" },
+  "+66":  { length: 9, regex: /^[689]\d{8}$/, example: "812345678" },
+  "+62":  { length: 11, regex: /^8\d{10}$/, example: "81234567890" },
+  "+63":  { length: 10, regex: /^9\d{9}$/, example: "9123456789" },
+  "+84":  { length: 9, regex: /^[35789]\d{8}$/, example: "912345678" },
+  "+95":  { length: 9, regex: /^9\d{8}$/, example: "912345678" },
+  "+855": { length: 9, regex: /^[1-9]\d{8}$/, example: "123456789" },
+  "+90":  { length: 10, regex: /^5\d{9}$/, example: "5321234567" },
+  "+98":  { length: 10, regex: /^9\d{9}$/, example: "9123456789" },
+  "+962": { length: 9, regex: /^7[789]\d{7}$/, example: "791234567" },
+  "+961": { length: 8, regex: /^[37]\d{7}$/, example: "71234567" },
+  "+963": { length: 9, regex: /^9[4-6]\d{7}$/, example: "944567890" },
+  "+972": { length: 9, regex: /^5[0-9]\d{7}$/, example: "501234567" },
+  "+964": { length: 10, regex: /^7[3-9]\d{8}$/, example: "7301234567" },
+  "+20":  { length: 10, regex: /^1[0-2]\d{8}$/, example: "1012345678" },
+  "+27":  { length: 9, regex: /^[6-8]\d{8}$/, example: "812345678" },
+  "+234": { length: 10, regex: /^[7-9]\d{9}$/, example: "8123456789" },
+  "+254": { length: 9, regex: /^7\d{8}$/, example: "712345678" },
+  "+251": { length: 9, regex: /^9\d{8}$/, example: "912345678" },
+  "+255": { length: 9, regex: /^7[5-9]\d{7}$/, example: "751234567" },
+  "+256": { length: 9, regex: /^7[1-9]\d{7}$/, example: "712345678" },
+  "+233": { length: 9, regex: /^[235]\d{8}$/, example: "201234567" },
+  "+212": { length: 9, regex: /^6[0-9]\d{7}$/, example: "612345678" },
+  "+216": { length: 8, regex: /^[29]\d{7}$/, example: "20123456" },
+  "+213": { length: 9, regex: /^[567]\d{8}$/, example: "551234567" },
+  "+61":  { length: 9, regex: /^4\d{8}$/, example: "412345678" },
+  "+64":  { length: 9, regex: /^2\d{8}$/, example: "212345678" },
   "+55":  { length: 11, regex: /^[1-9]{2}9\d{8}$/, example: "11912345678" },
-  "+52":  { length: 10, regex: /^1\d{9}$/,          example: "1234567890"  },
-  "+54":  { length: 10, regex: /^9\d{9}$/,          example: "9123456789"  },
-  "+56":  { length: 9,  regex: /^9\d{8}$/,          example: "912345678"   },
-  "+57":  { length: 10, regex: /^3\d{9}$/,          example: "3123456789"  },
-  "+58":  { length: 10, regex: /^4\d{9}$/,          example: "4121234567"  },
-  "+51":  { length: 9,  regex: /^9\d{8}$/,          example: "912345678"   },
+  "+52":  { length: 10, regex: /^1\d{9}$/, example: "1234567890" },
+  "+54":  { length: 10, regex: /^9\d{9}$/, example: "9123456789" },
+  "+56":  { length: 9, regex: /^9\d{8}$/, example: "912345678" },
+  "+57":  { length: 10, regex: /^3\d{9}$/, example: "3123456789" },
+  "+58":  { length: 10, regex: /^4\d{9}$/, example: "4121234567" },
+  "+51":  { length: 9, regex: /^9\d{8}$/, example: "912345678" },
 };
 
 const COUNTRY_LIST = [
@@ -186,7 +186,7 @@ function validateEmail(val: string): string {
   return "";
 }
 
-export function RegistrationPage() {
+export function CampaignRegister() {
   const navigate = useNavigate();
   const { campaignId } = useParams<{ campaignId: string }>();
   const { setCurrentUser } = useStore();
@@ -202,7 +202,6 @@ export function RegistrationPage() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [isLoading, setIsLoading] = useState(false);
 
-  // FIX 2: track mounted state to avoid setState after unmount
   const mountedRef = useRef(true);
   useEffect(() => {
     return () => { mountedRef.current = false; };
@@ -219,7 +218,7 @@ export function RegistrationPage() {
     return "idle";
   };
 
-  const nameState  = getFieldState("fullName", form.fullName, !validateName(form.fullName));
+  const nameState   = getFieldState("fullName", form.fullName, !validateName(form.fullName));
   const mobileState = getFieldState("mobile", form.mobile, !validateMobile(form.mobile, form.countryCode));
   const emailState  = getFieldState("email", form.email, form.email.length > 0 && !validateEmail(form.email));
 
@@ -252,10 +251,9 @@ export function RegistrationPage() {
     setIsLoading(true);
 
     const fullMobile = form.countryCode + form.mobile;
-    // FIX 1: null when blank — never write a fake placeholder email
     const cleanEmail = form.email.trim() || null;
 
-    // ── Step 1: Upsert into `users` (by mobile) ─────────────────────────
+    // Save to users table
     try {
       const { error: userError } = await supabase
         .from("users")
@@ -268,15 +266,13 @@ export function RegistrationPage() {
       console.error("Supabase user save error:", err);
     }
 
-    // ── Step 2: Insert into `participants` so dashboard counts this registration
-    // FIX 3 & 4: write to participants table with campaignId at registration time
+    // Save participant registration
     try {
       await saveParticipantRegistration(
         { full_name: form.fullName.trim(), email: cleanEmail, mobile: fullMobile },
         campaignId
       );
     } catch (err) {
-      // Non-fatal — quiz can still proceed
       console.error("Failed to save participant registration:", err);
     }
 
@@ -285,20 +281,28 @@ export function RegistrationPage() {
       mobile: fullMobile,
       mobileRaw: form.mobile,
       countryCode: form.countryCode,
-      // FIX 1: store null/empty instead of a fake placeholder
       email: cleanEmail ?? "",
     };
 
     setCurrentUser(user);
 
-    // FIX 2: cancel navigation if component was unmounted during the async work
+    // ── KEY FIX: store participant so CampaignQuiz can read it ──
+    sessionStorage.setItem(
+      `quiz_participant_${campaignId}`,
+      JSON.stringify({
+        name: user.name,
+        email: user.email || null,
+        startedAt: new Date().toISOString(),
+      })
+    );
+
     if (mountedRef.current) {
       setIsLoading(false);
       navigate(`/campaign/${campaignId}/quiz`);
     }
   };
 
-  const selectedFormat = COUNTRY_FORMATS[form.countryCode];
+  const selectedFormat  = COUNTRY_FORMATS[form.countryCode];
   const selectedCountry = COUNTRY_LIST.find((c) => c.code === form.countryCode);
 
   return (

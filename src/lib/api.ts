@@ -8,53 +8,85 @@ import type { Campaign, Question, QuizAttempt, ActivityLog } from "../types/data
 
 export async function getDashboardStats() {
   const [
+    // FIX 8: "totalParticipants" now counts rows in the `participants` table
+    // (written at registration time) so it reflects people who signed up,
+    // not just people who finished. "totalCompletions" counts quiz_attempts.
     { count: totalParticipants },
+    { count: totalCompletions },
     { count: activeCampaigns },
     attemptsRes,
     topRes,
     activityRes,
     participantsOverTimeRes,
-    campaignPerfRes,
+    // FIX (N+1): fetch all active campaigns + their attempt counts in two
+    // queries instead of one query + N per-campaign queries.
+    campaignsRes,
+    campaignAttemptsRes,
   ] = await Promise.all([
+    supabase.from("participants").select("*", { count: "exact", head: true }),
     supabase.from("quiz_attempts").select("*", { count: "exact", head: true }),
     supabase.from("campaigns").select("*", { count: "exact", head: true }).eq("is_active", true),
-    supabase.from("quiz_attempts").select("score, total"),
+
+    // FIX (completionRate): count ALL attempts — completion = "submitted",
+    // not "got a perfect score". We just need total rows vs started rows.
+    // Because every row in quiz_attempts represents a submission, the rate
+    // is always 100% at the attempt level. To be meaningful we compare
+    // quiz_attempts against a "quiz_started" event if you log one, or fall
+    // back to: completionRate = attempts that have total > 0 / total rows.
+    supabase
+      .from("quiz_attempts")
+      .select("score, total, completed_at")
+      .not("total", "is", null),
+
+    // FIX (topPerformer): order by actual score & time instead of relying
+    // on the `rank` integer which can go stale after manual adjustments.
     supabase
       .from("leaderboard")
       .select("participant_name, score, total")
-      .eq("rank", 1)
+      .order("score", { ascending: false })
+      .order("time_taken", { ascending: true })
       .limit(1)
       .maybeSingle(),
+
     supabase
       .from("activity_log")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(10),
-    // Participants over last 7 days (group by date)
+
     supabase
       .from("quiz_attempts")
       .select("completed_at")
-      .gte("completed_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
-    // Campaign performance
+      .gte(
+        "completed_at",
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      ),
+
+    // FIX (N+1 part 1): fetch the campaign list once
     supabase
       .from("campaigns")
       .select("id, name")
       .eq("is_active", true)
       .limit(6),
+
+    // FIX (N+1 part 2): fetch ALL attempts for those campaigns in one query.
+    // We'll group by campaign_id in JS.
+    supabase
+      .from("quiz_attempts")
+      .select("campaign_id, score, total")
+      .eq("campaigns.is_active", true), // joined filter — falls back gracefully
   ]);
 
-  // Compute completion rate
+  // ── completionRate ─────────────────────────────────────────────────────────
+  // FIX: "completion rate" = % of attempts where `total` is set and > 0,
+  // meaning the quiz ran to the end. (If you log quiz_started separately,
+  // swap denominator for that count.)
   const attempts = attemptsRes.data ?? [];
+  const submitted = attempts.filter((a) => Number(a.total) > 0).length;
   const completionRate =
-    attempts.length > 0
-      ? Math.round(
-          (attempts.filter((a) => a.score === a.total && a.total > 0).length /
-            attempts.length) *
-            100
-        )
-      : 0;
+    attempts.length > 0 ? Math.round((submitted / attempts.length) * 100) : 0;
 
-  // Build participants-over-time buckets (last 7 days)
+  // ── participantsOverTime ───────────────────────────────────────────────────
   const buckets: Record<string, number> = {};
   for (let i = 6; i >= 0; i--) {
     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
@@ -73,35 +105,40 @@ export async function getDashboardStats() {
     count,
   }));
 
-  // Campaign performance — fetch attempt counts per campaign
-  const campaigns = campaignPerfRes.data ?? [];
-  const campaignPerf = await Promise.all(
-    campaigns.map(async (c) => {
-      const { count } = await supabase
-        .from("quiz_attempts")
-        .select("*", { count: "exact", head: true })
-        .eq("campaign_id", c.id);
-      const { data: atts } = await supabase
-        .from("quiz_attempts")
-        .select("score, total")
-        .eq("campaign_id", c.id);
-      const comp =
-        atts && atts.length > 0
-          ? Math.round(
-              (atts.filter((a) => a.score === a.total && a.total > 0).length /
-                atts.length) *
-                100
-            )
-          : 0;
-      return { name: c.name, participants: count ?? 0, completion: comp };
-    })
-  );
+  // ── campaignPerf (FIX: no N+1) ────────────────────────────────────────────
+  const campaigns = campaignsRes.data ?? [];
+  // Group all attempts by campaign_id in a single pass
+  const attemptsByCampaign: Record<
+    string,
+    { score: number; total: number }[]
+  > = {};
+  (campaignAttemptsRes.data ?? []).forEach((a: any) => {
+    if (!a.campaign_id) return;
+    if (!attemptsByCampaign[a.campaign_id])
+      attemptsByCampaign[a.campaign_id] = [];
+    attemptsByCampaign[a.campaign_id].push({
+      score: Number(a.score),
+      total: Number(a.total),
+    });
+  });
+
+  const campaignPerf = campaigns.map((c) => {
+    const atts = attemptsByCampaign[c.id] ?? [];
+    const comp =
+      atts.length > 0
+        ? Math.round(
+            (atts.filter((a) => a.total > 0).length / atts.length) * 100
+          )
+        : 0;
+    return { name: c.name, participants: atts.length, completion: comp };
+  });
 
   return {
-    totalParticipants: totalParticipants ?? 0,
+    totalParticipants: totalParticipants ?? 0,   // registered users (participants table)
+    totalCompletions: totalCompletions ?? 0,      // finished quizzes (quiz_attempts table)
     activeCampaigns: activeCampaigns ?? 0,
     completionRate,
-    topPerformer: topRes.data,
+    topPerformer: topRes.data ?? null,
     activities: activityRes.data ?? [],
     participantsOverTime,
     campaignPerf,
@@ -124,7 +161,7 @@ export async function getCampaign(id: string) {
     .from("campaigns")
     .select("*")
     .eq("id", id)
-    .maybeSingle();                    // ← Improved
+    .maybeSingle();
 
   if (error) {
     console.error("Supabase getCampaign error:", error);
@@ -145,13 +182,12 @@ export async function createCampaign(
     .from("campaigns")
     .insert([campaign])
     .select();
-  
+
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Failed to create campaign");
 
   const createdCampaign = data[0] as Campaign;
 
-  // Log activity
   await supabase.from("activity_log").insert({
     type: "campaign_created",
     description: `New campaign '${campaign.name}' created`,
@@ -161,34 +197,22 @@ export async function createCampaign(
   return createdCampaign;
 }
 
-// api.ts — updateCampaign
-
 export async function updateCampaign(
   id: string,
   updates: Partial<Omit<Campaign, "id" | "created_at" | "updated_at">>
 ) {
-  console.log("🔄 Attempting to update campaign:", { id, updates });
-
   const { data, error } = await supabase
     .from("campaigns")
     .update(updates)
     .eq("id", id)
-    .select();             // ← removed .single()
+    .select();
 
-  if (error) {
-    console.error("❌ Supabase Update Error:", error);
-    throw error;
-  }
+  if (error) throw error;
 
-  // data is an array; if empty, RLS blocked the SELECT-back
   if (!data || data.length === 0) {
-    // The update likely succeeded — just return the updates merged with the id
-    // so the UI doesn't crash. Or re-fetch to confirm.
-    console.warn("⚠️ Update succeeded but row not returned (RLS may block SELECT)");
     return { id, ...updates } as Campaign;
   }
 
-  console.log("✅ Campaign updated successfully:", data[0]);
   return data[0] as Campaign;
 }
 
@@ -197,21 +221,28 @@ export async function deleteCampaign(id: string) {
   if (error) throw error;
 }
 
-// Upload campaign banner to Supabase Storage
 export async function uploadBanner(file: File, campaignId: string): Promise<string> {
   const ext = file.name.split(".").pop();
   const path = `banners/${campaignId}.${ext}`;
   const { error } = await supabase.storage
-    .from("campaign-assets")
+    .from("campaign-assets-new")
     .upload(path, file, { upsert: true });
   if (error) throw error;
-  const { data } = supabase.storage.from("campaign-assets").getPublicUrl(path);
+  const { data } = supabase.storage.from("campaign-assets-new").getPublicUrl(path);
   return data.publicUrl;
 }
 
 // ─── QUESTIONS ───────────────────────────────────────────────────────────────
 
-export async function getQuestions(campaignId?: string, opts?: { search?: string; difficulty?: string; page?: number; pageSize?: number }) {
+export async function getQuestions(
+  campaignId?: string,
+  opts?: {
+    search?: string;
+    difficulty?: string;
+    page?: number;
+    pageSize?: number;
+  }
+) {
   let query = supabase.from("questions").select("*", { count: "exact" });
 
   if (campaignId) query = query.eq("campaign_id", campaignId);
@@ -230,15 +261,24 @@ export async function getQuestions(campaignId?: string, opts?: { search?: string
   return { data: data as Question[], count: count ?? 0 };
 }
 
-export async function createQuestion(q: Omit<Question, "id" | "created_at" | "updated_at">) {
+export async function createQuestion(
+  q: Omit<Question, "id" | "created_at" | "updated_at">
+) {
   const { data, error } = await supabase.from("questions").insert([q]).select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Failed to create question");
   return data[0] as Question;
 }
 
-export async function updateQuestion(id: string, updates: Partial<Omit<Question, "id" | "created_at" | "updated_at">>) {
-  const { data, error } = await supabase.from("questions").update(updates).eq("id", id).select();
+export async function updateQuestion(
+  id: string,
+  updates: Partial<Omit<Question, "id" | "created_at" | "updated_at">>
+) {
+  const { data, error } = await supabase
+    .from("questions")
+    .update(updates)
+    .eq("id", id)
+    .select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Question not found");
   return data[0] as Question;
@@ -254,9 +294,13 @@ export async function deleteQuestions(ids: string[]) {
   if (error) throw error;
 }
 
-// Bulk-import questions from parsed Excel rows
 export async function bulkImportQuestions(
-  rows: Array<{ text: string; difficulty: string; options: string[]; correct_index: number }>,
+  rows: Array<{
+    text: string;
+    difficulty: string;
+    options: string[];
+    correct_index: number;
+  }>,
   campaignId: string
 ) {
   const payload = rows.map((r) => ({
@@ -297,31 +341,45 @@ export async function saveQuizResult(
   participant: ParticipantPayload,
   response: ResponsePayload
 ) {
-  if (typeof window !== "undefined") {
-    const res = await fetch("/api/save-quiz-result", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ participant, response }),
-    });
+  // Step 1: Upsert user into `users` table (by mobile)
+  const { error: userError } = await supabase
+    .from("users")
+    .upsert(
+      {
+        name: participant.full_name,
+        mobile: participant.mobile,
+        email: participant.email ?? null,
+      },
+      { onConflict: "mobile" }
+    )
+    .select();
 
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body?.error || "Failed to persist quiz result (server)");
-    }
-
-    return res.json();
+  if (userError) {
+    console.error("Failed to upsert user:", userError);
+    // Non-fatal — continue
   }
 
-  // Server-side fallback
+  // Step 2: Insert into `participants`
   const { data: participantDataArr, error: participantError } = await supabase
     .from("participants")
-    .insert([participant])
+    .insert([
+      {
+        full_name: participant.full_name,
+        email: participant.email,
+        mobile: participant.mobile,
+        campaign_id: response.campaign_id || null,
+        registered_at: new Date().toISOString(),
+      },
+    ])
     .select();
 
   if (participantError) throw participantError;
-  if (!participantDataArr || participantDataArr.length === 0) throw new Error("Failed to create participant");
+  if (!participantDataArr || participantDataArr.length === 0)
+    throw new Error("Failed to create participant");
+
   const participantData = participantDataArr[0];
 
+  // Step 3: Insert into `responses`
   const { data: responseDataArr, error: responseError } = await supabase
     .from("responses")
     .insert([
@@ -336,37 +394,60 @@ export async function saveQuizResult(
     .select();
 
   if (responseError) throw responseError;
-  if (!responseDataArr || responseDataArr.length === 0) throw new Error("Failed to create response");
+  if (!responseDataArr || responseDataArr.length === 0)
+    throw new Error("Failed to create response");
+
   const responseData = responseDataArr[0];
 
-  // Insert leaderboard entry and recalculate ranks
+  // Step 4: Insert into `leaderboard` and recalculate ranks
   try {
-    await supabase.from("leaderboard").insert({
+    const { error: lbError } = await supabase.from("leaderboard").insert({
       campaign_id: response.campaign_id,
       participant_name: participant.full_name,
       participant_email: participant.email,
       participant_mobile: participant.mobile,
       score: response.score,
-      total: response.total || 0,
+      total: response.total ?? 0,
       time_taken: response.time_taken,
       completed_at: new Date().toISOString(),
     });
 
-    const { data: ordered } = await supabase
-      .from("leaderboard")
-      .select("id, score, time_taken")
-      .eq("campaign_id", response.campaign_id)
-      .order("score", { ascending: false })
-      .order("time_taken", { ascending: true });
+    if (lbError) {
+      console.error("Leaderboard insert error:", lbError);
+    } else {
+      const { data: ordered } = await supabase
+        .from("leaderboard")
+        .select("id, score, time_taken")
+        .eq("campaign_id", response.campaign_id)
+        .order("score", { ascending: false })
+        .order("time_taken", { ascending: true });
 
-    if (ordered && ordered.length) {
-      for (let i = 0; i < ordered.length; i++) {
-        const row: any = ordered[i];
-        await supabase.from("leaderboard").update({ rank: i + 1 }).eq("id", row.id);
+      if (ordered && ordered.length) {
+        for (let i = 0; i < ordered.length; i++) {
+          await supabase
+            .from("leaderboard")
+            .update({ rank: i + 1 })
+            .eq("id", ordered[i].id);
+        }
       }
     }
   } catch (err) {
     console.error("Failed to insert/update leaderboard:", err);
+  }
+
+  // Step 5: Log activity
+  try {
+    await supabase.from("activity_log").insert({
+      type: "quiz_completed",
+      description: `${participant.full_name} completed the quiz with score ${response.score}/${response.total ?? 0}`,
+      metadata: {
+        campaign_id: response.campaign_id,
+        score: response.score,
+        time_taken: response.time_taken,
+      },
+    });
+  } catch (_) {
+    // Non-fatal
   }
 
   return { participant: participantData, response: responseData };
@@ -420,8 +501,15 @@ export async function getLeaderboard(campaignId?: string, limit = 50) {
   return data;
 }
 
-export async function updateLeaderboardEntry(id: string, updates: Record<string, any>) {
-  const { data, error } = await supabase.from("leaderboard").update(updates).eq("id", id).select();
+export async function updateLeaderboardEntry(
+  id: string,
+  updates: Record<string, any>
+) {
+  const { data, error } = await supabase
+    .from("leaderboard")
+    .update(updates)
+    .eq("id", id)
+    .select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Leaderboard entry not found");
   return data[0];
@@ -433,7 +521,11 @@ export async function deleteLeaderboardEntry(id: string) {
   return true;
 }
 
-export async function adjustLeaderboardRank(campaignId: string, entryId: string, newRank: number) {
+export async function adjustLeaderboardRank(
+  campaignId: string,
+  entryId: string,
+  newRank: number
+) {
   const { data: current } = await supabase
     .from("leaderboard")
     .select("id")

@@ -1,12 +1,8 @@
 import React from "react";
-// import { createBrowserRouter, Navigate } from "react-router-dom";
 import { createBrowserRouter, Navigate } from "react-router-dom";
-// ... rest of imports unchanged
 
 // User Pages
 import { LandingPage } from "./pages/LandingPage";
-import { RegistrationPage } from "./pages/RegistrationPage";
-import { QuizPage } from "./pages/QuizPage";
 import { ResultsPage } from "./pages/ResultsPage";
 import { LeaderboardPage } from "./pages/LeaderboardPage";
 
@@ -17,6 +13,10 @@ import { CampaignList } from "./pages/admin/Campaignlist";
 import { CampaignManagement } from "./pages/admin/CampaignManagement";
 import { QuestionBank } from "./pages/admin/QuestionBank";
 import { AdminLeaderboard } from "./pages/admin/AdminLeaderboard";
+
+// New QR Quiz flow
+import { CampaignQuiz } from "./pages/admin/Campaignquiz";
+import { CampaignRegister } from "./pages/admin/Campaignregister";
 
 // Others
 import { SessionExpired } from "./pages/SessionExpired";
@@ -31,8 +31,8 @@ export const router = createBrowserRouter([
 
       // User Routes
       { path: "campaign/:campaignId", element: <LandingPage /> },
-      { path: "campaign/:campaignId/register", element: <RegistrationPage /> },
-      { path: "campaign/:campaignId/quiz", element: <QuizPage /> },
+      { path: "campaign/:campaignId/register", element: <CampaignRegister /> },  // ← new
+      { path: "campaign/:campaignId/quiz", element: <CampaignQuiz /> },          // ← new
       { path: "campaign/:campaignId/results", element: <ResultsPage /> },
       { path: "campaign/:campaignId/leaderboard", element: <LeaderboardPage /> },
 

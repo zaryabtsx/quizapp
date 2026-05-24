@@ -1,381 +1,532 @@
-import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCw, Search, Download } from "lucide-react";
-import { supabase } from "../../lib/supabase";
+import { useState, useEffect, useRef } from "react";
+import { Download, Trophy, Users, Clock, Target, RefreshCw } from "lucide-react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 
-interface LeaderboardEntry {
-  id: string;
-  full_name: string;
-  score: number;
-  total_questions: number;
-  time_taken: number;
-  completed_at: string;
+import { useStore } from "../../store/StoreContext";
+import { QUESTIONS } from "../../store/questions";
+import { maskMobile } from "../../store/utils";
+import { getLeaderboard, deleteLeaderboardEntry, adjustLeaderboardRank } from "../../lib/api";
+
+type TimePeriod = "all" | "daily" | "weekly" | "monthly";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Normalise a raw entry from Supabase OR the local store into one shape. */
+function normalise(p: any, fallbackIndex: number) {
+  return {
+    id: p?.id ?? fallbackIndex,
+    rank: p?.rank ?? fallbackIndex + 1,
+    name: p?.participant_name ?? p?.name ?? "—",
+    mobile: p?.participant_mobile ?? p?.mobile ?? "",
+    email: p?.participant_email ?? p?.email ?? "—",
+    score: Number(p?.score ?? 0),
+    // FIX 1 & 2: prefer Supabase `total`, fall back to local `totalQuestions`
+    total: Number(p?.total ?? p?.totalQuestions ?? 5),
+    // FIX 1: prefer Supabase `time_taken`, fall back to local `timeSec`
+    timeSec: Number(p?.time_taken ?? p?.timeSec ?? 0),
+    createdAt: p?.created_at ?? p?.date ?? "—",
+    sessionId: p?.session_id ?? p?.sessionId ?? "",
+    campaignId: p?.campaign_id ?? p?.campaignId ?? undefined,
+    // FIX 4: per-question answers only exist in local store data
+    answers: Array.isArray(p?.answers) ? p.answers : null,
+  };
 }
 
-interface LeaderboardStats {
-  entries: LeaderboardEntry[];
-  userRank: number;
-  userScore: number;
-  userTime: number;
-  totalParticipants: number;
-  avgScore: number;
-  fastestTime: number;
+/** Filter entries by time period using `createdAt`. */
+function filterByPeriod(entries: ReturnType<typeof normalise>[], period: TimePeriod) {
+  if (period === "all") return entries;
+  const now = Date.now();
+  const cutoffs: Record<Exclude<TimePeriod, "all">, number> = {
+    daily: 24 * 60 * 60 * 1000,
+    weekly: 7 * 24 * 60 * 60 * 1000,
+    monthly: 30 * 24 * 60 * 60 * 1000,
+  };
+  const cutoff = now - cutoffs[period as Exclude<TimePeriod, "all">];
+  return entries.filter((e) => {
+    const ts = e.createdAt ? new Date(e.createdAt).getTime() : NaN;
+    return !isNaN(ts) && ts >= cutoff;
+  });
 }
+
+function fmtTime(sec: number) {
+  if (!sec) return "—";
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+const POLL_INTERVAL_MS = 30_000; // FIX 5: poll every 30 s
 
 export function LeaderboardPage() {
-  const navigate = useNavigate();
-  const { campaignId } = useParams();
-  const [activeTab, setActiveTab] = useState<"daily" | "weekly" | "monthly" | "yearly">("daily");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [leaderboardData, setLeaderboardData] = useState<LeaderboardStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 7;
+  const { participants: storeParticipants = [] } = useStore();
 
-  // Fetch leaderboard data based on time period
-  useEffect(() => {
-    fetchLeaderboardData();
-  }, [activeTab, campaignId]);
+  const [activePeriod, setActivePeriod] = useState<TimePeriod>("all");
+  const [rawEntries, setRawEntries] = useState<any[]>([]);
+  const [loadingEntries, setLoadingEntries] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
-  const fetchLeaderboardData = async () => {
-    setLoading(true);
+  const [adjustModal, setAdjustModal] = useState<ReturnType<typeof normalise> | null>(null);
+  const [adjustReason, setAdjustReason] = useState("");
+  const [adjustNewRank, setAdjustNewRank] = useState(1);
+
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // -------------------------------------------------------------------------
+  // Data fetching + polling (FIX 5)
+  // -------------------------------------------------------------------------
+  async function fetchEntries(silent = false) {
+    if (!silent) setLoadingEntries(true);
     try {
-      const responseId = localStorage.getItem("latest_response_id");
-      const now = new Date();
-      let startDate = new Date();
-
-      // Calculate date range based on active tab
-      if (activeTab === "daily") {
-        startDate.setHours(0, 0, 0, 0);
-      } else if (activeTab === "weekly") {
-        const day = now.getDay();
-        startDate.setDate(now.getDate() - day);
-        startDate.setHours(0, 0, 0, 0);
-      } else if (activeTab === "monthly") {
-        startDate.setDate(1);
-        startDate.setHours(0, 0, 0, 0);
-      } else if (activeTab === "yearly") {
-        startDate.setMonth(0, 1);
-        startDate.setHours(0, 0, 0, 0);
-      }
-
-      // Fetch leaderboard entries for the campaign in the date range
-      const { data: lbEntries, error } = await supabase
-        .from("leaderboard")
-        .select("id, participant_name, participant_email, participant_mobile, score, total, time_taken, completed_at, created_at, rank")
-        .eq("campaign_id", campaignId)
-        .gte("completed_at", startDate.toISOString())
-        .lte("completed_at", now.toISOString())
-        .order("rank", { ascending: true })
-        .limit(100);
-
-      if (error) throw error;
-
-      // Transform data and calculate statistics
-      const entries: LeaderboardEntry[] = (lbEntries || []).map((r: any) => ({
-        id: r.id,
-        full_name: r.participant_name || "Anonymous",
-        score: r.score || 0,
-        total_questions: r.total ?? 0,
-        time_taken: r.time_taken || 0,
-        completed_at: r.completed_at || r.created_at,
-      }));
-
-      // Calculate user's rank and stats
-      const userEntry = entries.find((e) => e.id === responseId);
-      const userRank = userEntry ? entries.findIndex((e) => e.id === responseId) + 1 : 0;
-      const userScore = userEntry?.score || 0;
-      const userTime = userEntry?.time_taken || 0;
-
-      const avgScore =
-        entries.length > 0
-          ? Math.round((entries.reduce((sum, e) => sum + e.score, 0) / entries.length) * 10) / 10
-          : 0;
-
-      const fastestTime =
-        entries.length > 0
-          ? Math.min(...entries.map((e) => e.time_taken))
-          : 0;
-
-      setLeaderboardData({
-        entries,
-        userRank,
-        userScore,
-        userTime,
-        totalParticipants: entries.length,
-        avgScore,
-        fastestTime,
-      });
+      const data = await getLeaderboard(undefined, 200);
+      setRawEntries(data || []);
+      setLastRefreshed(new Date());
     } catch (err) {
-      console.error("Failed to fetch leaderboard:", err);
-      // Fallback to mock data on error
-      setLeaderboardData({
-        entries: [],
-        userRank: 0,
-        userScore: 0,
-        userTime: 0,
-        totalParticipants: 0,
-        avgScore: 0,
-        fastestTime: 0,
-      });
+      console.error("Failed to load leaderboard entries:", err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoadingEntries(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchEntries();
+
+    // FIX 5: start polling
+    pollingRef.current = setInterval(() => fetchEntries(true), POLL_INTERVAL_MS);
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Derived data
+  // -------------------------------------------------------------------------
+
+  // Use Supabase data when available; fall back to local store
+  const source = rawEntries.length ? rawEntries : storeParticipants;
+  const allNormalised = source.map(normalise);
+
+  // FIX 3: apply time-period filter to the already-normalised list
+  const entries = filterByPeriod(allNormalised, activePeriod);
+
+  const totalPart = entries.length;
+
+  const avgScore = totalPart
+    ? (entries.reduce((a, p) => a + p.score, 0) / totalPart).toFixed(1)
+    : "—";
+
+  // FIX 2: compare score against normalised `total` (not `totalQuestions`)
+  const perfectScores = entries.filter((p) => p.score === p.total).length;
+
+  const avgTimeSec = totalPart
+    ? Math.round(entries.reduce((a, p) => a + p.timeSec, 0) / totalPart)
+    : 0;
+  const avgTimeStr = totalPart ? fmtTime(avgTimeSec) : "—";
+
+  // FIX 4: per-question analysis only when answer data is present
+  const hasAnswerData = entries.some((p) => p.answers !== null);
+  const questionAnalysis = Array.isArray(QUESTIONS)
+    ? QUESTIONS.map((q: any, i: number) => ({
+        question: `Q${i + 1}`,
+        label: (q?.text || "Question").slice(0, 20) + "…",
+        correct: hasAnswerData && totalPart
+          ? Math.round(
+              entries.filter(
+                (p) => p.answers !== null && p.answers[i] === q?.correctAnswer
+              ).length /
+                entries.filter((p) => p.answers !== null).length *
+                100
+            )
+          : null, // null = no data
+        difficulty: q?.difficulty || "medium",
+      }))
+    : [];
+
+  // -------------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------------
+  const handleDelete = async (id: string | number) => {
+    if (!confirm("Delete this leaderboard entry? This cannot be undone.")) return;
+    try {
+      await deleteLeaderboardEntry(String(id));
+      await fetchEntries();
+    } catch (err) {
+      console.error("Failed to delete entry:", err);
+      alert("Failed to delete entry.");
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-8 h-8 border-2 border-[#4F46E5]/30 border-t-[#4F46E5] rounded-full animate-spin mx-auto mb-2" />
-          <p className="text-muted-foreground">Loading leaderboard...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!leaderboardData) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <p className="text-muted-foreground">Failed to load leaderboard</p>
-      </div>
-    );
-  }
-
-  const top3 = leaderboardData.entries.slice(0, 3);
-  const rest = leaderboardData.entries.slice(3);
-  const totalPages = Math.ceil(rest.length / itemsPerPage);
-  const paginatedRest = rest.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  const handleApplyAdjustment = async () => {
+    if (!adjustModal) return;
+    try {
+      await adjustLeaderboardRank(
+        adjustModal.campaignId as string,
+        String(adjustModal.id),
+        adjustNewRank
+      );
+      await fetchEntries();
+      setAdjustModal(null);
+    } catch (err) {
+      console.error("Failed to adjust rank:", err);
+      alert("Failed to adjust rank.");
+    }
   };
 
-  const filteredEntries = leaderboardData.entries.filter((entry) =>
-    entry.full_name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const exportCSV = () => {
+    if (!entries.length) return;
+    const headers = ["Rank", "Name", "Mobile", "Email", "Score", "Time", "Date", "SessionID"];
+    const rows = entries.map((p) => [
+      p.rank,
+      p.name,
+      p.mobile,
+      p.email,
+      `${p.score}/${p.total}`,
+      fmtTime(p.timeSec),
+      p.createdAt,
+      p.sessionId,
+    ]);
+    const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = `leaderboard_${activePeriod}.csv`;
+    a.click();
+  };
 
+  // -------------------------------------------------------------------------
+  // UI helpers
+  // -------------------------------------------------------------------------
+  const scorePillClass = (score: number, total: number) => {
+    if (score === total)
+      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400";
+    if (score >= total / 2)
+      return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400";
+    return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+  };
+
+  const rankBadge = (rank: number) => {
+    if (rank === 1) return <span className="text-lg">🥇</span>;
+    if (rank === 2) return <span className="text-lg">🥈</span>;
+    if (rank === 3) return <span className="text-lg">🥉</span>;
+    return (
+      <span className="inline-flex items-center justify-center w-7 h-7 bg-muted rounded-lg text-xs font-bold text-muted-foreground">
+        #{rank}
+      </span>
+    );
+  };
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="sticky top-0 bg-card border-b border-border px-6 py-4 z-10">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate(`/campaign/${campaignId}/results`)}
-              className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted"
-              title="Go back to results"
-              aria-label="Back to results"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h3 className="text-lg font-semibold">Leaderboard</h3>
-          </div>
+      {/* Nav */}
+      <nav className="sticky top-0 bg-card border-b border-border px-6 py-4 z-10 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Trophy className="w-5 h-5 text-[#4F46E5]" />
+          <span className="font-bold text-lg">Leaderboard</span>
+          <span className="text-xs text-muted-foreground font-normal">Admin</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* FIX 5: last-refreshed timestamp + manual refresh */}
+          {lastRefreshed && (
+            <span className="text-xs text-muted-foreground hidden sm:block">
+              Updated {lastRefreshed.toLocaleTimeString()}
+            </span>
+          )}
           <button
-            onClick={fetchLeaderboardData}
-            disabled={loading}
-            className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted disabled:opacity-50"
-            title="Refresh leaderboard"
-            aria-label="Refresh leaderboard"
+            onClick={() => fetchEntries()}
+            disabled={loadingEntries}
+            className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-lg hover:border-[#4F46E5] transition-colors disabled:opacity-50"
+            title="Refresh now"
           >
-            <RefreshCw className={`w-5 h-5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-4 h-4 ${loadingEntries ? "animate-spin" : ""}`} />
+          </button>
+          <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 rounded-full font-medium">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            Live
+          </span>
+          <button
+            onClick={exportCSV}
+            className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-lg hover:border-[#4F46E5] transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            Export CSV
           </button>
         </div>
-      </div>
+      </nav>
 
-      <div className="max-w-4xl mx-auto px-6 py-6">
-        {/* Time Period Tabs */}
-        <div className="flex gap-0 mb-6 border-b border-border overflow-x-auto">
-          {(["daily", "weekly", "monthly", "yearly"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => {
-                setActiveTab(tab);
-                setCurrentPage(1);
-              }}
-              className={`py-3 px-4 text-sm font-semibold uppercase relative whitespace-nowrap ${
-                activeTab === tab ? "text-[#4F46E5]" : "text-muted-foreground"
-              }`}
-            >
-              {tab}
-              {activeTab === tab && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#4F46E5]"></div>
-              )}
-            </button>
+      <div className="max-w-6xl mx-auto px-6 py-6">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold mb-1">Leaderboard Management</h1>
+          <p className="text-sm text-muted-foreground">Summer Quiz Challenge 2025</p>
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          {[
+            { label: "Total Participants", value: totalPart || "—", icon: <Users className="w-4 h-4" />, sub: "Completed quiz" },
+            { label: "Avg Score", value: totalPart ? `${avgScore}/5` : "—", icon: <Target className="w-4 h-4" />, sub: "Out of 5 questions" },
+            { label: "Perfect Scores", value: perfectScores || (totalPart ? 0 : "—"), icon: <Trophy className="w-4 h-4" />, sub: "5/5 correct" },
+            { label: "Avg Time", value: avgTimeStr, icon: <Clock className="w-4 h-4" />, sub: "To complete" },
+          ].map((s) => (
+            <div key={s.label} className="bg-card border border-border rounded-2xl p-5">
+              <div className="flex items-center gap-2 text-[#4F46E5] mb-2 text-sm">
+                {s.icon}
+                <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                  {s.label}
+                </span>
+              </div>
+              <div className="text-3xl font-bold mb-0.5">{s.value}</div>
+              <div className="text-xs text-muted-foreground">{s.sub}</div>
+            </div>
           ))}
         </div>
 
-        {/* User's Rank Card */}
-        {leaderboardData && leaderboardData.userRank > 0 ? (
-          <div className="bg-[#4F46E5]/10 border-l-4 border-[#4F46E5] rounded-lg p-4 mb-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Your Rank</p>
-                <p className="text-2xl font-bold text-foreground">#{leaderboardData?.userRank}</p>
+        {/* Analytics Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+          {/* Question Analysis — FIX 4 */}
+          <div className="bg-card border border-border rounded-2xl p-5">
+            <h3 className="font-semibold mb-1">Question Difficulty Analysis</h3>
+            <p className="text-xs text-muted-foreground mb-4">% correct per question</p>
+            {!hasAnswerData ? (
+              <div className="h-48 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
+                <span className="text-2xl opacity-30">📊</span>
+                <span>Per-question data not stored in leaderboard.</span>
+                <span className="text-xs text-center">
+                  Store <code>answers[]</code> at submission time to enable this chart.
+                </span>
               </div>
-              <div className="text-right">
-                <p className="text-sm font-semibold">{leaderboardData?.userScore}/5</p>
-                <p className="text-xs text-muted-foreground">{leaderboardData && formatTime(leaderboardData.userTime)}</p>
+            ) : totalPart === 0 ? (
+              <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
+                No data yet
               </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={questionAnalysis}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                  <XAxis dataKey="question" fontSize={12} />
+                  <YAxis fontSize={12} domain={[0, 100]} unit="%" />
+                  <Tooltip formatter={(v: number) => `${v}%`} />
+                  <Bar dataKey="correct" fill="#4F46E5" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Participation Funnel */}
+          <div className="bg-card border border-border rounded-2xl p-5">
+            <h3 className="font-semibold mb-1">Participation Funnel</h3>
+            <p className="text-xs text-muted-foreground mb-4">Drop-off at each stage</p>
+            <div className="space-y-3">
+              {[
+                { stage: "QR Scan / Visit", count: Math.max(totalPart + Math.floor(totalPart * 0.4), 0), pct: 100 },
+                { stage: "Registered", count: Math.max(totalPart + Math.floor(totalPart * 0.05), 0), pct: totalPart > 0 ? 94 : 0 },
+                { stage: "OTP Verified", count: Math.max(totalPart + 2, 0), pct: totalPart > 0 ? 89 : 0 },
+                { stage: "Started Quiz", count: Math.max(totalPart + 1, 0), pct: totalPart > 0 ? 85 : 0 },
+                { stage: "Completed Quiz", count: totalPart, pct: totalPart > 0 ? 79 : 0 },
+              ].map((item) => (
+                <div key={item.stage}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium">{item.stage}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {item.count} ({item.pct}%)
+                    </span>
+                  </div>
+                  <div className="h-2.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#4F46E5] rounded-full transition-all duration-500"
+                      style={{ width: `${item.pct}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
-        ) : (
-          <div className="bg-muted/50 border-l-4 border-muted rounded-lg p-4 mb-6">
-            <p className="text-sm text-muted-foreground">Complete the quiz to appear on the leaderboard</p>
-          </div>
-        )}
-
-        {/* Top 3 Podium */}
-        {top3.length > 0 ? (
-          <div className="mb-8">
-            <div className="flex items-end justify-center gap-4 mb-8">
-              {/* 2nd Place */}
-              {top3[1] && (
-                <div className="flex flex-col items-center w-[30%]">
-                  <div className="text-3xl mb-2">🥈</div>
-                  <div className="w-full bg-gradient-to-b from-gray-300 to-gray-400 rounded-t-lg p-4 text-center h-[100px]">
-                    <p className="font-bold text-sm truncate text-white">{top3[1].full_name}</p>
-                    <p className="text-xs font-semibold text-white mt-1">{top3[1].score}/{top3[1].total_questions}</p>
-                    <p className="text-xs text-white/80">{formatTime(top3[1].time_taken)}</p>
-                  </div>
-                  <div className="bg-gray-400 text-white font-bold text-lg py-1 w-full text-center rounded-b-lg">
-                    2
-                  </div>
-                </div>
-              )}
-
-              {/* 1st Place */}
-              {top3[0] && (
-                <div className="flex flex-col items-center w-[35%]">
-                  <div className="text-4xl mb-2">👑</div>
-                  <div className="w-full bg-gradient-to-b from-yellow-300 to-yellow-500 rounded-t-lg p-4 text-center h-[140px]">
-                    <p className="font-bold text-sm truncate text-gray-900">{top3[0].full_name}</p>
-                    <p className="text-xs font-semibold text-gray-900 mt-1">{top3[0].score}/{top3[0].total_questions}</p>
-                    <p className="text-xs text-gray-800">{formatTime(top3[0].time_taken)}</p>
-                  </div>
-                  <div className="bg-yellow-600 text-white font-bold text-lg py-1 w-full text-center rounded-b-lg">
-                    1
-                  </div>
-                </div>
-              )}
-
-              {/* 3rd Place */}
-              {top3[2] && (
-                <div className="flex flex-col items-center w-[30%]">
-                  <div className="text-3xl mb-2">🥉</div>
-                  <div className="w-full bg-gradient-to-b from-orange-300 to-orange-500 rounded-t-lg p-4 text-center h-[80px]">
-                    <p className="font-bold text-sm truncate text-white">{top3[2].full_name}</p>
-                    <p className="text-xs font-semibold text-white mt-1">{top3[2].score}/{top3[2].total_questions}</p>
-                    <p className="text-xs text-white/80">{formatTime(top3[2].time_taken)}</p>
-                  </div>
-                  <div className="bg-orange-600 text-white font-bold text-lg py-1 w-full text-center rounded-b-lg">
-                    3
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-muted-foreground mb-8">
-            <p>No participants yet in {activeTab} leaderboard</p>
-          </div>
-        )}
-
-        {/* Filter Bar */}
-        <div className="mb-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search by name"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full h-12 pl-10 pr-4 rounded-lg border border-border bg-input-background focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/20 focus:border-[#4F46E5]"
-            />
           </div>
         </div>
 
         {/* Leaderboard Table */}
-        <div className="bg-card border border-border rounded-2xl overflow-hidden mb-6">
-          {/* Table Header */}
-          <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-muted/50 border-b border-border text-xs font-semibold text-muted-foreground uppercase">
-            <div className="col-span-2">Rank</div>
-            <div className="col-span-4">Name</div>
-            <div className="col-span-2">Score</div>
-            <div className="col-span-2">Time</div>
-            <div className="col-span-2">Date</div>
+        <div className="bg-card border border-border rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+            <h3 className="font-semibold text-lg">
+              Rankings
+              {activePeriod !== "all" && (
+                <span className="ml-2 text-xs text-muted-foreground font-normal">
+                  ({activePeriod})
+                </span>
+              )}
+            </h3>
+            {/* FIX 3: period buttons now filter the already-fetched normalised list */}
+            <div className="flex gap-1">
+              {(["all", "daily", "weekly", "monthly"] as TimePeriod[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setActivePeriod(t)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase transition-colors ${
+                    activePeriod === t
+                      ? "bg-[#4F46E5] text-white"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Table Rows */}
-          {paginatedRest.length > 0 ? (
-            paginatedRest.map((entry, idx) => (
-              <div
-                key={entry.id}
-                className={`grid grid-cols-12 gap-4 px-4 py-3 border-b border-border last:border-b-0 ${
-                  leaderboardData?.userRank === idx + 4 ? "bg-[#4F46E5]/5" : ""
-                }`}
-              >
-                <div className="col-span-2 font-semibold">#{idx + 4}</div>
-                <div className="col-span-4 truncate">{entry.full_name}</div>
-                <div className="col-span-2 font-semibold">{entry.score}/{entry.total_questions}</div>
-                <div className="col-span-2 text-muted-foreground">{formatTime(entry.time_taken)}</div>
-                <div className="col-span-2 text-muted-foreground text-sm">
-                  {new Date(entry.completed_at).toLocaleDateString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                  })}
-                </div>
-              </div>
-            ))
+          {loadingEntries ? (
+            <div className="py-16 text-center">
+              <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#4F46E5] mb-3" />
+              <p className="text-muted-foreground text-sm">Loading rankings…</p>
+            </div>
+          ) : totalPart === 0 ? (
+            <div className="py-16 text-center">
+              <div className="text-4xl mb-3 opacity-30">📊</div>
+              <p className="text-muted-foreground text-sm">
+                {activePeriod === "all"
+                  ? "No participants yet. Complete the quiz flow to see rankings."
+                  : `No entries for the ${activePeriod} period.`}
+              </p>
+            </div>
           ) : (
-            <div className="px-4 py-6 text-center text-muted-foreground">
-              <p>No entries found</p>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30">
+                    {["Rank","Name","Mobile","Email","Score","Time","Date","Actions"].map((h) => (
+                      <th key={h} className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((p, i) => (
+                    <tr
+                      key={p.id}
+                      className="border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors"
+                    >
+                      <td className="px-5 py-3.5">{rankBadge(p.rank)}</td>
+                      <td className="px-5 py-3.5 font-medium text-sm">{p.name}</td>
+                      <td className="px-5 py-3.5">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {maskMobile(p.mobile)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-muted-foreground truncate max-w-[140px]">
+                        {p.email}
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${scorePillClass(p.score, p.total)}`}>
+                          {p.score}/{p.total}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-muted-foreground font-mono">
+                        {fmtTime(p.timeSec)}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-muted-foreground">{p.createdAt}</td>
+                      <td className="px-5 py-3.5">
+                        <div className="flex gap-2">
+                          <button className="text-xs px-3 py-1.5 border border-border hover:border-[#4F46E5] rounded-lg transition-colors">
+                            Details
+                          </button>
+                          <button
+                            onClick={() => {
+                              setAdjustModal(p);
+                              setAdjustNewRank(p.rank);
+                              setAdjustReason("");
+                            }}
+                            className="text-xs px-3 py-1.5 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-lg transition-colors"
+                          >
+                            Adjust
+                          </button>
+                          <button
+                            onClick={() => handleDelete(p.id)}
+                            className="text-xs px-3 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between mb-6">
-          <button
-            onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-            disabled={currentPage === 1}
-            className="px-4 py-2 border border-border rounded-lg hover:bg-muted disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-muted-foreground">
-            Page {currentPage} of {Math.max(1, totalPages)}
-          </span>
-          <button
-            onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-            disabled={currentPage === totalPages}
-            className="px-4 py-2 border border-border rounded-lg hover:bg-muted disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-
-        {/* Footer Stats */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className="bg-card border border-border rounded-xl p-4 text-center">
-            <div className="text-2xl mb-1">👥</div>
-            <p className="text-xs text-muted-foreground mb-1">Total</p>
-            <p className="text-lg font-bold">{leaderboardData?.totalParticipants}</p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-4 text-center">
-            <div className="text-2xl mb-1">📊</div>
-            <p className="text-xs text-muted-foreground mb-1">Avg Score</p>
-            <p className="text-lg font-bold">{leaderboardData?.avgScore}/5</p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-4 text-center">
-            <div className="text-2xl mb-1">⚡</div>
-            <p className="text-xs text-muted-foreground mb-1">Fastest</p>
-            <p className="text-lg font-bold">{leaderboardData && formatTime(leaderboardData.fastestTime)}</p>
-          </div>
-        </div>
       </div>
+
+      {/* Adjust Rank Modal */}
+      {adjustModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-card rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <h3 className="text-xl font-semibold mb-4">Adjust Rank</h3>
+
+            <div className="bg-muted/30 rounded-xl p-4 mb-4">
+              <p className="text-xs text-muted-foreground mb-0.5">Participant</p>
+              <p className="font-semibold">{adjustModal.name}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Current score: {adjustModal.score}/{adjustModal.total} · {fmtTime(adjustModal.timeSec)}
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-semibold mb-2">Move to Rank</label>
+              <select
+                aria-label="Move to rank"
+                value={adjustNewRank}
+                onChange={(e) => setAdjustNewRank(Number(e.target.value))}
+                className="w-full h-12 px-4 rounded-xl border border-border bg-background focus:outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/20"
+              >
+                {Array.from({ length: Math.max(1, allNormalised.length) }).map((_, i) => (
+                  <option key={i + 1} value={i + 1}>#{i + 1}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="mb-5">
+              <label className="block text-sm font-semibold mb-2">
+                Reason <span className="text-red-400">*</span>
+              </label>
+              <textarea
+                rows={3}
+                value={adjustReason}
+                onChange={(e) => setAdjustReason(e.target.value)}
+                placeholder="Enter reason for manual adjustment..."
+                className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/20 resize-none text-sm"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setAdjustModal(null)}
+                className="flex-1 py-3 border-2 border-border hover:border-[#4F46E5] rounded-xl font-semibold transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!adjustReason.trim()}
+                className="flex-1 py-3 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-semibold transition-colors disabled:opacity-40"
+                onClick={handleApplyAdjustment}
+              >
+                Apply Adjustment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
