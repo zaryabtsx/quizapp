@@ -27,7 +27,7 @@ interface DBQuestion {
   option_d: string | null;
   option_e: string | null;
   correct_option: string;
-  difficulty: "EASY" | "MEDIUM" | "HARD";
+  // difficulty: "EASY" | "MEDIUM" | "HARD";
   created_at: string;
 }
 
@@ -210,7 +210,7 @@ function QuestionForm({
           </div>
 
           <div>
-            <label className="block text-sm font-semibold mb-2">Difficulty</label>
+            {/* <label className="block text-sm font-semibold mb-2">Difficulty</label>
             <div className="flex gap-2">
               {(["EASY", "MEDIUM", "HARD"] as const).map((d) => (
                 <button
@@ -226,7 +226,7 @@ function QuestionForm({
                   {d}
                 </button>
               ))}
-            </div>
+            </div> */}
           </div>
         </div>
 

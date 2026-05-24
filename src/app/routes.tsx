@@ -3,7 +3,6 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 // User Pages
 import { LandingPage } from "./pages/LandingPage";
 import { RegistrationPage } from "./pages/RegistrationPage";
-import { OTPVerificationPage } from "./pages/OTPVerificationPage";
 import { QuizPage } from "./pages/QuizPage";
 import { ResultsPage } from "./pages/ResultsPage";
 import { LeaderboardPage } from "./pages/LeaderboardPage";
@@ -30,7 +29,6 @@ export const router = createBrowserRouter([
       // User Routes
       { path: "campaign/:campaignId", element: <LandingPage /> },
       { path: "campaign/:campaignId/register", element: <RegistrationPage /> },
-      { path: "campaign/:campaignId/verify", element: <OTPVerificationPage /> },
       { path: "campaign/:campaignId/quiz", element: <QuizPage /> },
       { path: "campaign/:campaignId/results", element: <ResultsPage /> },
       { path: "campaign/:campaignId/leaderboard", element: <LeaderboardPage /> },
