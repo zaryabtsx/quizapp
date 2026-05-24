@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useRef, ReactNode } from "react";
+import React, { createContext, useContext, useState, ReactNode } from "react";
 import { Participant, CurrentUser } from "../types";
 
 interface StoreState {
@@ -14,26 +14,69 @@ interface StoreState {
   clearCurrentSession: () => void;
 }
 
+const STORAGE_KEY = "quiz_store";
+
+function loadState() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveState(patch: object) {
+  try {
+    const current = loadState();
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...patch }));
+  } catch {}
+}
+
+function clearState() {
+  try {
+    sessionStorage.removeItem(STORAGE_KEY);
+  } catch {}
+}
+
 const StoreContext = createContext<StoreState | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [participants, setParticipants] = useState<Participant[]>([]);
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const [currentOTP, setCurrentOTP] = useState<string | null>(null);
-  const [quizStartTime, setQuizStartTime] = useState<number | null>(null);
+  const saved = loadState();
+
+  const [participants, setParticipants] = useState<Participant[]>(saved.participants ?? []);
+  const [currentUser, setCurrentUserRaw] = useState<CurrentUser | null>(saved.currentUser ?? null);
+  const [currentOTP, setCurrentOTPRaw] = useState<string | null>(saved.currentOTP ?? null);
+  const [quizStartTime, setQuizStartTimeRaw] = useState<number | null>(saved.quizStartTime ?? null);
+
+  const setCurrentUser = (u: CurrentUser | null) => {
+    setCurrentUserRaw(u);
+    saveState({ currentUser: u });
+  };
+
+  const setCurrentOTP = (otp: string | null) => {
+    setCurrentOTPRaw(otp);
+    saveState({ currentOTP: otp });
+  };
+
+  const setQuizStartTime = (t: number | null) => {
+    setQuizStartTimeRaw(t);
+    saveState({ quizStartTime: t });
+  };
 
   const addParticipant = (p: Participant) => {
     setParticipants((prev) => {
       const updated = [...prev, p];
       updated.sort((a, b) => b.score - a.score || a.timeSec - b.timeSec);
+      saveState({ participants: updated });
       return updated;
     });
   };
 
   const clearCurrentSession = () => {
-    setCurrentUser(null);
-    setCurrentOTP(null);
-    setQuizStartTime(null);
+    setCurrentUserRaw(null);
+    setCurrentOTPRaw(null);
+    setQuizStartTimeRaw(null);
+    clearState();
   };
 
   return (

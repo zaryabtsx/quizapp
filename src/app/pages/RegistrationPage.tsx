@@ -3,8 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Check, Lock, ArrowLeft } from "lucide-react";
 import { useStore } from "../../store/StoreContext";
 import { CurrentUser } from "../../types";
-import { generateOTP, sendVerificationEmail } from "../lib/resend";
-import { saveParticipantRegistration } from "../lib/api";
 
 type FieldErrors = Record<string, string>;
 
@@ -86,52 +84,26 @@ export function RegistrationPage() {
     setErrors(newErrors);
     if (Object.keys(newErrors).length > 0) return;
 
-    if (!form.email.trim()) {
-      setFormError("Email is required for OTP verification");
-      return;
-    }
-
     setIsLoading(true);
 
-    const otp = generateOTP();
-    try {
-      await sendVerificationEmail({
-        email: form.email.trim(),
-        otp,
-        campaignId: campaignId ?? "campaign",
-      });
+    // DUMMY MODE — no API calls
+    const DUMMY_OTP = "123456";
 
-      // Save participant registration to database
-      await saveParticipantRegistration(
-        {
-          full_name: form.fullName.trim(),
-          email: form.email.trim(),
-          mobile: form.countryCode + form.mobile,
-        },
-        campaignId ?? "campaign"
-      );
+    const user: CurrentUser = {
+      name: form.fullName.trim(),
+      mobile: form.countryCode + form.mobile,
+      mobileRaw: form.mobile,
+      countryCode: form.countryCode,
+      email: form.email.trim() || "demo@test.com",
+    };
 
-      const user: CurrentUser = {
-        name: form.fullName.trim(),
-        mobile: form.countryCode + form.mobile,
-        mobileRaw: form.mobile,
-        countryCode: form.countryCode,
-        email: form.email.trim(),
-      };
+    setCurrentUser(user);
+    setCurrentOTP(DUMMY_OTP);
 
-      setCurrentUser(user);
-      setCurrentOTP(otp);
-      navigate(`/campaign/${campaignId}/verify`);
-    } catch (err) {
-      console.error("Resend email error:", err);
-      setFormError(
-        err instanceof Error
-          ? err.message
-          : "Failed to send verification email. Please try again."
-      );
-    } finally {
+    setTimeout(() => {
       setIsLoading(false);
-    }
+      navigate(`/campaign/${campaignId}/verify`);
+    }, 500);
   };
 
   return (
@@ -227,7 +199,7 @@ export function RegistrationPage() {
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-2">
               <label htmlFor="email" className="text-sm font-semibold">Email Address</label>
-              <span className="text-xs text-muted-foreground">(required for OTP)</span>
+              <span className="text-xs text-muted-foreground">(optional in demo)</span>
             </div>
             <div className="relative">
               <input
@@ -282,7 +254,7 @@ export function RegistrationPage() {
             {isLoading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Sending OTP...
+                Setting up...
               </>
             ) : (
               "Continue to Verification →"
