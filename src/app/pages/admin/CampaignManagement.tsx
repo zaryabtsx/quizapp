@@ -1,7 +1,7 @@
 // src/pages/admin/CampaignManagement.tsx
 import { useState, useEffect } from "react";
 import { AdminLayout } from "../../components/AdminLayout";
-import { ArrowLeft, QrCode, Loader2, Eye, Download, Trash2 } from "lucide-react";
+import { ArrowLeft, QrCode, Loader2, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getCampaign,
@@ -35,20 +35,30 @@ export function CampaignManagement() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isEditing) return;
+    if (!isEditing || !campaignId) return;
 
-    setLoadingInit(true);
-    getCampaign(campaignId!)
-      .then((c) => {
+    const loadCampaign = async () => {
+      setLoadingInit(true);
+      setError(null);
+
+      try {
+        const c = await getCampaign(campaignId);
+        
         setFormData({
           name: c.name,
           description: c.description ?? "",
           is_active: c.is_active,
         });
         setQrCodeUrl(c.qr_code_url ?? null);
-      })
-      .catch((e) => setError("Failed to load campaign"))
-      .finally(() => setLoadingInit(false));
+      } catch (err: any) {
+        console.error("Failed to load campaign:", err);
+        setError(err.message || "Campaign not found");
+      } finally {
+        setLoadingInit(false);
+      }
+    };
+
+    loadCampaign();
   }, [campaignId, isEditing]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -77,8 +87,8 @@ export function CampaignManagement() {
       alert(`✅ Campaign ${isEditing ? "updated" : "created"} successfully!`);
       navigate("/admin/campaigns");
     } catch (err: any) {
-      console.error(err);
-      setError(err?.response?.data?.message || err?.message || "Failed to save campaign");
+      console.error("Save Error:", err);
+      setError(err?.message || "Failed to save campaign");
     } finally {
       setSaving(false);
     }
@@ -111,12 +121,19 @@ export function CampaignManagement() {
     <AdminLayout>
       <div className="p-6 max-w-4xl mx-auto">
         <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => navigate("/admin/campaigns")} className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted">
+          <button 
+            onClick={() => navigate("/admin/campaigns")} 
+            className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-muted"
+          >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold">{isEditing ? "Edit Campaign" : "Create New Campaign"}</h1>
-            <p className="text-sm text-muted-foreground">{isEditing ? "Update details" : "Set up a new campaign"}</p>
+            <h1 className="text-2xl font-bold">
+              {isEditing ? "Edit Campaign" : "Create New Campaign"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {isEditing ? "Update details" : "Set up a new campaign"}
+            </p>
           </div>
         </div>
 
@@ -133,7 +150,9 @@ export function CampaignManagement() {
 
               <div className="space-y-6">
                 <div>
-                  <label className="block text-sm font-semibold mb-2">Campaign Name <span className="text-red-500">*</span></label>
+                  <label className="block text-sm font-semibold mb-2">
+                    Campaign Name <span className="text-red-500">*</span>
+                  </label>
                   <input
                     type="text"
                     value={formData.name}

@@ -124,8 +124,17 @@ export async function getCampaign(id: string) {
     .from("campaigns")
     .select("*")
     .eq("id", id)
-    .single();
-  if (error) throw error;
+    .maybeSingle();                    // ← Improved
+
+  if (error) {
+    console.error("Supabase getCampaign error:", error);
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error("Campaign not found or you don't have permission to view it.");
+  }
+
   return data as Campaign;
 }
 
@@ -160,10 +169,19 @@ export async function updateCampaign(
     .from("campaigns")
     .update(updates)
     .eq("id", id)
-    .select();
-  if (error) throw error;
-  if (!data || data.length === 0) throw new Error("Campaign not found");
-  return data[0] as Campaign;
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Update campaign error:", error);
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error("Campaign not found or you don't have permission to update it.");
+  }
+
+  return data as Campaign;
 }
 
 export async function deleteCampaign(id: string) {
@@ -271,7 +289,6 @@ export async function saveQuizResult(
   participant: ParticipantPayload,
   response: ResponsePayload
 ) {
-  // If running in the browser, forward to server endpoint that uses the service role key
   if (typeof window !== "undefined") {
     const res = await fetch("/api/save-quiz-result", {
       method: "POST",
@@ -287,7 +304,7 @@ export async function saveQuizResult(
     return res.json();
   }
 
-  // Server-side fallback (e.g., if this library is used on server runtime)
+  // Server-side fallback
   const { data: participantDataArr, error: participantError } = await supabase
     .from("participants")
     .insert([participant])
@@ -314,7 +331,7 @@ export async function saveQuizResult(
   if (!responseDataArr || responseDataArr.length === 0) throw new Error("Failed to create response");
   const responseData = responseDataArr[0];
 
-  // Insert leaderboard entry and recalculate ranks (best score first, then shortest time)
+  // Insert leaderboard entry and recalculate ranks
   try {
     await supabase.from("leaderboard").insert({
       campaign_id: response.campaign_id,
@@ -361,7 +378,6 @@ export async function saveParticipantRegistration(
       registered_at: new Date().toISOString(),
     };
 
-    // Only add campaign_id if provided
     if (campaignId) {
       payload.campaign_id = campaignId;
     }
@@ -376,7 +392,6 @@ export async function saveParticipantRegistration(
     return data[0];
   } catch (err) {
     console.warn("Failed to save participant registration:", err);
-    // Don't throw - registration should continue even if DB fails
     return null;
   }
 }
@@ -397,7 +412,6 @@ export async function getLeaderboard(campaignId?: string, limit = 50) {
   return data;
 }
 
-// Update a single leaderboard row
 export async function updateLeaderboardEntry(id: string, updates: Record<string, any>) {
   const { data, error } = await supabase.from("leaderboard").update(updates).eq("id", id).select();
   if (error) throw error;
@@ -405,14 +419,12 @@ export async function updateLeaderboardEntry(id: string, updates: Record<string,
   return data[0];
 }
 
-// Delete a leaderboard row
 export async function deleteLeaderboardEntry(id: string) {
   const { error } = await supabase.from("leaderboard").delete().eq("id", id);
   if (error) throw error;
   return true;
 }
 
-// Move an entry to a new rank within the campaign and recompute ranks
 export async function adjustLeaderboardRank(campaignId: string, entryId: string, newRank: number) {
   const { data: current } = await supabase
     .from("leaderboard")
