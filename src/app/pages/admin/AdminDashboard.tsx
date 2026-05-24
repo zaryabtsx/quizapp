@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "../../hooks/useAsync";
-import { getDashboardStats } from "../../lib/api";
+import { getDashboardStats } from "../../../lib/api";
 
 function Skeleton({ className = "" }: { className?: string }) {
   return (

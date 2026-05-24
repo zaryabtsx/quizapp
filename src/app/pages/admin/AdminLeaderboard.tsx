@@ -14,7 +14,7 @@ import { useStore } from "../../../store/StoreContext";
 import { QUESTIONS } from "../../../store/questions";
 import { maskMobile } from "../../../store/utils";
 import { Participant } from "../../../types";
-import { getLeaderboard, deleteLeaderboardEntry, adjustLeaderboardRank } from "../../lib/api";
+import { getLeaderboard, deleteLeaderboardEntry, adjustLeaderboardRank } from "../../../lib/api";
 
 type TimePeriod = "all" | "daily" | "weekly" | "monthly";
 

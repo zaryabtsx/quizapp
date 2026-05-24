@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { AdminLayout } from "../../components/AdminLayout";
 import { Plus, Edit, Trash2, Search, Eye } from "lucide-react";
 import { useAsync } from "../../hooks/useAsync";
-import { getCampaigns, deleteCampaign } from "../../lib/api";
+import { getCampaigns, deleteCampaign } from "../../../lib/api";
 import type { Campaign } from "../../../types/database";
 
 function StatusBadge({ isActive }: { isActive: boolean }) {

@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, Clock, AlertTriangle } from "lucide-react";
 import confetti from "canvas-confetti";
 import { useStore } from "../../store/StoreContext";
 import { QUESTIONS } from "../../store/questions";
-import { saveQuizResult } from "../lib/api";
+import { saveQuizResult } from "../../lib/api";
 import { formatTimePadded, formatTime, generateSessionId, formatDate } from "../../store/utils";
 import { Participant } from "../../types";
 

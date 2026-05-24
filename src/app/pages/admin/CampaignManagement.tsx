@@ -8,7 +8,7 @@ import {
   createCampaign,
   updateCampaign,
   deleteCampaign,
-} from "../../lib/api";
+} from "../../../lib/api";
 
 type FormData = {
   name: string;
@@ -78,7 +78,7 @@ export function CampaignManagement() {
       is_active: formData.is_active,
     };
 
-    console.log("📤 Sending update payload:", { campaignId: campaignId, payload });
+    console.log("📤 Sending payload to Supabase:", { campaignId, payload });
 
     if (isEditing) {
       await updateCampaign(campaignId!, payload);
@@ -89,7 +89,7 @@ export function CampaignManagement() {
     alert(`✅ Campaign ${isEditing ? "updated" : "created"} successfully!`);
     navigate("/admin/campaigns");
   } catch (err: any) {
-    console.error("💥 Final Catch Error:", err);
+    console.error("💥 Final Error Object:", err);
     setError(err?.message || "Failed to save campaign");
   } finally {
     setSaving(false);
