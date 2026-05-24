@@ -2,14 +2,14 @@ import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { useStore } from "../../store/StoreContext";
-import { generateOTP, sendVerificationEmail } from "../lib/resend";
 
 const OTP_LENGTH = 6;
+const DUMMY_OTP = "123456";
 
 export function OTPVerificationPage() {
   const navigate = useNavigate();
   const { campaignId } = useParams<{ campaignId: string }>();
-  const { currentUser, currentOTP, setCurrentOTP } = useStore();
+  const { currentUser, setCurrentOTP } = useStore();
 
   const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(""));
   const [error, setError] = useState("");
@@ -18,10 +18,9 @@ export function OTPVerificationPage() {
   const [shakeError, setShakeError] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Redirect if no user context
   useEffect(() => {
-    if (!currentUser || !currentOTP) navigate(`/campaign/${campaignId}/register`);
-  }, [currentUser, currentOTP, campaignId, navigate]);
+    if (!currentUser) navigate(`/campaign/${campaignId}/register`);
+  }, [currentUser, campaignId, navigate]);
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
@@ -57,76 +56,46 @@ export function OTPVerificationPage() {
     const next = Array(OTP_LENGTH).fill("");
     pasted.split("").forEach((ch, i) => { next[i] = ch; });
     setDigits(next);
-    const focusIdx = Math.min(pasted.length, OTP_LENGTH - 1);
+    // just move focus to last filled digit, do NOT auto-submit
+    const focusIdx = Math.min(pasted.length - 1, OTP_LENGTH - 1);
     inputRefs.current[focusIdx]?.focus();
   };
 
   const enteredOTP = digits.join("");
 
-  const handleVerify = async () => {
+  const handleVerify = () => {
     if (enteredOTP.length !== OTP_LENGTH) {
-      setError(`Please enter a ${OTP_LENGTH}-digit code.`);
+      setError(`Please enter all ${OTP_LENGTH} digits.`);
       return;
     }
-    if (!currentUser?.email) {
-      setError("Unable to verify OTP: missing email.");
-      return;
-    }
-    if (!currentOTP) {
-      setError("Verification code expired. Please resend the code.");
-      return;
-    }
+
     setIsLoading(true);
 
-    if (enteredOTP !== currentOTP) {
-      setIsLoading(false);
-      setError("Incorrect code. Please try again.");
-      setShakeError(true);
-      setDigits(Array(OTP_LENGTH).fill(""));
-      setTimeout(() => {
-        inputRefs.current[0]?.focus();
-        setShakeError(false);
-      }, 500);
-      return;
-    }
-
-    navigate(`/campaign/${campaignId}/quiz`);
+    setTimeout(() => {
+      if (enteredOTP !== DUMMY_OTP) {
+        setIsLoading(false);
+        setError("Incorrect code. Hint: use 123456");
+        setShakeError(true);
+        setDigits(Array(OTP_LENGTH).fill(""));
+        setTimeout(() => {
+          inputRefs.current[0]?.focus();
+          setShakeError(false);
+        }, 500);
+        return;
+      }
+      navigate(`/campaign/${campaignId}/quiz`);
+    }, 500);
   };
 
-  const handleResend = async () => {
-    if (!currentUser?.email) {
-      setError("Unable to resend code: missing email.");
-      return;
-    }
-
+  const handleResend = () => {
+    setCurrentOTP(DUMMY_OTP);
     setError("");
-    setStatusMessage("");
-    setIsLoading(true);
-    const otp = generateOTP();
-
-    try {
-      await sendVerificationEmail({
-        email: currentUser.email,
-        otp,
-        campaignId: campaignId ?? "campaign",
-      });
-      setCurrentOTP(otp);
-      setStatusMessage("A new verification code was sent.");
-      setDigits(Array(OTP_LENGTH).fill(""));
-      inputRefs.current[0]?.focus();
-    } catch (err) {
-      console.error("Resend email error:", err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to resend code. Please try again."
-      );
-    } finally {
-      setIsLoading(false);
-    }
+    setDigits(Array(OTP_LENGTH).fill(""));
+    setStatusMessage("Code resent. Use: 123456");
+    inputRefs.current[0]?.focus();
   };
 
-  const maskedEmail = currentUser ? currentUser.email : "";
+  const maskedEmail = currentUser?.email ?? "your email";
 
   return (
     <div className="min-h-screen bg-background px-6 py-8 flex items-center justify-center">
@@ -143,14 +112,13 @@ export function OTPVerificationPage() {
         </div>
 
         <div className="bg-card rounded-2xl p-7 border border-border text-center">
-          {/* Icon */}
           <div className="w-14 h-14 bg-[#4F46E5]/10 border border-[#4F46E5]/20 rounded-2xl flex items-center justify-center mx-auto mb-5">
             <ShieldCheck className="w-7 h-7 text-[#4F46E5]" />
           </div>
 
           <h1 className="text-2xl font-bold mb-2">Verify Your Email</h1>
-          <p className="text-sm text-muted-foreground mb-1">We sent a verification code to</p>
-          <p className="text-[#4F46E5] font-semibold text-sm mb-6">{maskedEmail}</p>
+          <p className="text-sm text-muted-foreground mb-1">Demo mode — enter the code below</p>
+          <p className="text-[#4F46E5] font-bold text-lg tracking-[0.3em] mb-5">{DUMMY_OTP}</p>
 
           {/* OTP Inputs */}
           <div
@@ -182,15 +150,9 @@ export function OTPVerificationPage() {
             ))}
           </div>
 
-          {/* Error */}
-          {error && (
-            <p className="text-xs text-red-500 mb-4">{error}</p>
-          )}
-          {statusMessage && (
-            <p className="text-xs text-emerald-500 mb-4">{statusMessage}</p>
-          )}
+          {error && <p className="text-xs text-red-500 mb-4">{error}</p>}
+          {statusMessage && <p className="text-xs text-amber-500 mb-4">{statusMessage}</p>}
 
-          {/* Verify button */}
           <button
             onClick={handleVerify}
             disabled={isLoading || enteredOTP.length !== OTP_LENGTH}
@@ -208,10 +170,7 @@ export function OTPVerificationPage() {
 
           <p className="text-xs text-muted-foreground mb-3">
             Didn't receive it?{" "}
-            <button
-              onClick={handleResend}
-              className="text-[#4F46E5] underline font-medium"
-            >
+            <button onClick={handleResend} className="text-[#4F46E5] underline font-medium">
               Resend code
             </button>
           </p>

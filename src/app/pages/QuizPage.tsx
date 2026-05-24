@@ -8,8 +8,8 @@ import { saveQuizResult } from "../lib/api";
 import { formatTimePadded, formatTime, generateSessionId, formatDate } from "../../store/utils";
 import { Participant } from "../../types";
 
-const INACTIVITY_WARN_SEC = 240; // 4 min
-const INACTIVITY_EXPIRE_SEC = 300; // 5 min
+const INACTIVITY_WARN_SEC = 240;
+const INACTIVITY_EXPIRE_SEC = 300;
 
 export function QuizPage() {
   const navigate = useNavigate();
@@ -27,7 +27,6 @@ export function QuizPage() {
 
   const startTimeRef = useRef<number>(Date.now());
 
-  // Redirect if no user
   useEffect(() => {
     if (!currentUser) navigate(`/campaign/${campaignId}/register`);
     else {
@@ -36,13 +35,11 @@ export function QuizPage() {
     }
   }, [currentUser, campaignId, navigate, setQuizStartTime]);
 
-  // Global timer
   useEffect(() => {
     const id = setInterval(() => setTimeElapsed((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Inactivity tracking
   useEffect(() => {
     const id = setInterval(() => {
       setInactivityTime((prev) => {
@@ -51,9 +48,7 @@ export function QuizPage() {
           setShowInactivityWarning(true);
           setWarningCountdown(60);
         }
-        if (next >= INACTIVITY_EXPIRE_SEC) {
-          navigate("/session-expired");
-        }
+        if (next >= INACTIVITY_EXPIRE_SEC) navigate("/session-expired");
         return next;
       });
     }, 1000);
@@ -75,7 +70,6 @@ export function QuizPage() {
     };
   }, [navigate]);
 
-  // Warning countdown
   useEffect(() => {
     if (!showInactivityWarning || warningCountdown <= 0) return;
     const id = setInterval(() => setWarningCountdown((c) => c - 1), 1000);
@@ -86,12 +80,6 @@ export function QuizPage() {
   const totalQuestions = QUESTIONS.length;
   const progressPct = ((currentQuestion + 1) / totalQuestions) * 100;
 
-  const difficultyStyle: Record<string, string> = {
-    EASY: "bg-emerald-500 text-white",
-    MEDIUM: "bg-amber-500 text-white",
-    HARD: "bg-red-500 text-white",
-  };
-
   const handleSelectAnswer = (letter: string) => {
     if (showAnswer) return;
     setSelectedAnswers((prev) => ({ ...prev, [currentQuestion]: letter }));
@@ -101,9 +89,8 @@ export function QuizPage() {
   const isLastQuestion = currentQuestion === totalQuestions - 1;
 
   const handleNext = () => {
-    if (isLastQuestion) {
-      finishQuiz();
-    } else {
+    if (isLastQuestion) finishQuiz();
+    else {
       setCurrentQuestion((q) => q + 1);
       setShowAnswer(false);
     }
@@ -119,7 +106,7 @@ export function QuizPage() {
   const finishQuiz = async () => {
     const timeSec = Math.round((Date.now() - startTimeRef.current) / 1000);
     const score = QUESTIONS.reduce(
-      (acc:any, q:any, i:any) => acc + (selectedAnswers[i] === q.correctAnswer ? 1 : 0),
+      (acc: any, q: any, i: any) => acc + (selectedAnswers[i] === q.correctAnswer ? 1 : 0),
       0
     );
 
@@ -149,19 +136,11 @@ export function QuizPage() {
         time_taken: timeSec,
         total: totalQuestions,
       };
-
       const result = await saveQuizResult(
-        {
-          full_name: currentUser!.name,
-          email: currentUser!.email || null,
-          mobile: currentUser!.mobile,
-        },
+        { full_name: currentUser!.name, email: currentUser!.email || null, mobile: currentUser!.mobile },
         responsePayload
       );
-
-      if (result?.response?.id) {
-        localStorage.setItem("latest_response_id", result.response.id);
-      }
+      if (result?.response?.id) localStorage.setItem("latest_response_id", result.response.id);
     } catch (err) {
       console.error("Failed to persist quiz result:", err);
     }
@@ -178,42 +157,31 @@ export function QuizPage() {
 
   const getOptionClass = (letter: string) => {
     const isSelected = selectedAnswers[currentQuestion] === letter;
-    const isCorrect = letter === question.correctAnswer;
-
-    if (!showAnswer) {
-      return isSelected
-        ? "border-[#4F46E5] bg-[#4F46E5]/5 ring-1 ring-[#4F46E5]"
-        : "border-border hover:border-[#4F46E5] hover:shadow-sm";
-    }
-    if (isCorrect) return "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 ring-1 ring-emerald-500";
-    if (isSelected && !isCorrect) return "border-red-400 bg-red-50 dark:bg-red-900/20";
-    return "border-border opacity-60";
+    if (isSelected) return "border-[#4F46E5] bg-[#4F46E5]/5 ring-1 ring-[#4F46E5]";
+    if (showAnswer) return "border-border opacity-60";
+    return "border-border hover:border-[#4F46E5] hover:shadow-sm";
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Sticky Header */}
-      <div className="sticky top-0 bg-card border-b border-border shadow-sm px-6 py-4 z-10">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
+
+      {/* ── Header ── */}
+      <div className="bg-card border-b border-border px-4 pt-3 pb-2 flex-shrink-0">
         <div className="max-w-2xl mx-auto">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-muted-foreground">Summer Quiz Challenge 2025</span>
-            <span className="text-sm font-semibold text-[#4F46E5]">
-              Question {currentQuestion + 1} of {totalQuestions}
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs text-muted-foreground">Summer Quiz Challenge 2025</span>
+            <span className="text-xs font-semibold text-[#4F46E5]">
+              {currentQuestion + 1} / {totalQuestions}
             </span>
           </div>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-foreground" />
-              <span className="font-mono text-lg font-semibold">
-                {formatTimePadded(timeElapsed)}
-              </span>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-foreground" />
+              <span className="font-mono text-base font-semibold">{formatTimePadded(timeElapsed)}</span>
             </div>
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${difficultyStyle[question.difficulty]}`}>
-              {question.difficulty}
-            </span>
           </div>
           {/* Progress bar */}
-          <div className="mt-3 h-1.5 bg-muted rounded-full overflow-hidden">
+          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
             <div
               className="h-full bg-[#4F46E5] rounded-full transition-all duration-500"
               style={{ width: `${progressPct}%` }}
@@ -222,103 +190,87 @@ export function QuizPage() {
         </div>
       </div>
 
-      {/* Question */}
-      <div className="max-w-2xl mx-auto px-6 py-8">
-        <div className="bg-card border border-border rounded-2xl p-6 mb-6">
-          <p className="text-xs font-semibold text-[#4F46E5] uppercase tracking-wider mb-3">
+      {/* ── Body ── */}
+      <div className="flex-1 min-h-0 overflow-hidden px-4 py-3 max-w-2xl mx-auto w-full flex flex-col gap-3">
+
+        {/* Question card */}
+        <div className="bg-card border border-border rounded-xl px-4 py-3 flex-shrink-0">
+          <p className="text-[10px] font-semibold text-[#4F46E5] uppercase tracking-wider mb-1.5">
             Question {currentQuestion + 1}
           </p>
-          <h3 className="text-xl font-semibold text-center leading-relaxed">
-            {question.text}
-          </h3>
+          <h3 className="text-base font-semibold leading-snug">{question.text}</h3>
         </div>
 
         {/* Options */}
-        <div className="space-y-3 mb-8">
-          {question.options.map((option:any) => {
+        <div className="flex flex-col gap-2 flex-1 min-h-0">
+          {question.options.map((option: any) => {
             const isSelected = selectedAnswers[currentQuestion] === option.letter;
-            const isCorrect = showAnswer && option.letter === question.correctAnswer;
-            const isWrong = showAnswer && isSelected && !isCorrect;
 
             return (
               <button
                 key={option.letter}
                 onClick={() => handleSelectAnswer(option.letter)}
                 disabled={showAnswer}
-                className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left ${getOptionClass(option.letter)}`}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 transition-all text-left flex-1 ${getOptionClass(option.letter)}`}
               >
                 <div
-                  className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 transition-colors ${
-                    isCorrect
-                      ? "bg-emerald-500 text-white"
-                      : isWrong
-                      ? "bg-red-400 text-white"
-                      : isSelected
-                      ? "bg-[#4F46E5] text-white"
-                      : "bg-[#4F46E5]/10 text-[#4F46E5]"
+                  className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 transition-colors ${
+                    isSelected ? "bg-[#4F46E5] text-white" : "bg-[#4F46E5]/10 text-[#4F46E5]"
                   }`}
                 >
                   {option.letter}
                 </div>
                 <span className="flex-1 text-sm font-medium">{option.text}</span>
-                {isCorrect && (
-                  <span className="text-emerald-500 font-bold text-lg">✓</span>
-                )}
-                {isWrong && (
-                  <span className="text-red-400 font-bold text-lg">✕</span>
-                )}
-                {!showAnswer && (
-                  <div
-                    className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
-                      isSelected ? "border-[#4F46E5] bg-[#4F46E5]" : "border-border"
-                    }`}
-                  >
-                    {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
-                  </div>
-                )}
+                <div
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                    isSelected ? "border-[#4F46E5] bg-[#4F46E5]" : "border-border"
+                  }`}
+                >
+                  {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
               </button>
             );
           })}
         </div>
 
-        {/* Navigation */}
-        <div className="flex items-center justify-between mb-6">
-          <button
-            onClick={handlePrevious}
-            disabled={currentQuestion === 0}
-            className="px-6 py-3 border-2 border-border rounded-xl font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#4F46E5] transition-colors flex items-center gap-2"
-          >
-            <ChevronLeft className="w-5 h-5" />
-            Previous
-          </button>
-          <button
-            onClick={handleNext}
-            disabled={!selectedAnswers[currentQuestion]}
-            className="px-6 py-3 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-          >
-            {isLastQuestion ? "Submit" : "Next"}
-            <ChevronRight className="w-5 h-5" />
-          </button>
-        </div>
+        {/* Navigation + dots */}
+        <div className="flex-shrink-0 flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={handlePrevious}
+              disabled={currentQuestion === 0}
+              className="px-4 py-2.5 border-2 border-border rounded-xl font-semibold text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#4F46E5] transition-colors flex items-center gap-1.5"
+            >
+              <ChevronLeft className="w-4 h-4" /> Previous
+            </button>
+            <button
+              onClick={handleNext}
+              disabled={!selectedAnswers[currentQuestion]}
+              className="px-4 py-2.5 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-semibold text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+            >
+              {isLastQuestion ? "Submit" : "Next"} <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
 
-        {/* Progress dots */}
-        <div className="flex justify-center gap-2">
-          {QUESTIONS.map((_, i:any) => (
-            <div
-              key={i}
-              className={`h-2 rounded-full transition-all duration-300 ${
-                i === currentQuestion
-                  ? "w-6 bg-[#4F46E5]"
-                  : selectedAnswers[i]
-                  ? "w-2 bg-[#4F46E5]/50"
-                  : "w-2 bg-border"
-              }`}
-            />
-          ))}
+          {/* Progress dots */}
+          <div className="flex justify-center gap-1.5">
+            {QUESTIONS.map((_: any, i: any) => (
+              <div
+                key={i}
+                className={`h-1.5 rounded-full transition-all duration-300 ${
+                  i === currentQuestion
+                    ? "w-5 bg-[#4F46E5]"
+                    : selectedAnswers[i]
+                    ? "w-1.5 bg-[#4F46E5]/50"
+                    : "w-1.5 bg-border"
+                }`}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Inactivity Warning */}
+      {/* ── Inactivity Warning ── */}
       {showInactivityWarning && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-card rounded-2xl p-6 max-w-sm w-full shadow-2xl">
@@ -331,10 +283,7 @@ export function QuizPage() {
               <span className="font-bold text-amber-500">{warningCountdown}s</span>
             </p>
             <button
-              onClick={() => {
-                setShowInactivityWarning(false);
-                setInactivityTime(0);
-              }}
+              onClick={() => { setShowInactivityWarning(false); setInactivityTime(0); }}
               className="w-full bg-[#4F46E5] hover:bg-[#4338CA] text-white py-3 rounded-xl font-semibold transition-colors"
             >
               Stay Active
@@ -343,7 +292,7 @@ export function QuizPage() {
         </div>
       )}
 
-      {/* Completion Modal */}
+      {/* ── Completion Modal ── */}
       {showCompletionModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-card rounded-2xl p-8 max-w-sm w-full text-center shadow-2xl">
