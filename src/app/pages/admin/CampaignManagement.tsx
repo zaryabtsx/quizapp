@@ -61,38 +61,40 @@ export function CampaignManagement() {
     loadCampaign();
   }, [campaignId, isEditing]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name.trim()) {
-      setError("Campaign name is required.");
-      return;
+ const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!formData.name.trim()) {
+    setError("Campaign name is required.");
+    return;
+  }
+
+  setSaving(true);
+  setError(null);
+
+  try {
+    const payload = {
+      name: formData.name.trim(),
+      description: formData.description.trim() || null,
+      is_active: formData.is_active,
+    };
+
+    console.log("📤 Sending update payload:", { campaignId: campaignId, payload });
+
+    if (isEditing) {
+      await updateCampaign(campaignId!, payload);
+    } else {
+      await createCampaign(payload);
     }
 
-    setSaving(true);
-    setError(null);
-
-    try {
-      const payload = {
-        name: formData.name.trim(),
-        description: formData.description.trim() || null,
-        is_active: formData.is_active,
-      };
-
-      if (isEditing) {
-        await updateCampaign(campaignId!, payload);
-      } else {
-        await createCampaign(payload);
-      }
-
-      alert(`✅ Campaign ${isEditing ? "updated" : "created"} successfully!`);
-      navigate("/admin/campaigns");
-    } catch (err: any) {
-      console.error("Save Error:", err);
-      setError(err?.message || "Failed to save campaign");
-    } finally {
-      setSaving(false);
-    }
-  };
+    alert(`✅ Campaign ${isEditing ? "updated" : "created"} successfully!`);
+    navigate("/admin/campaigns");
+  } catch (err: any) {
+    console.error("💥 Final Catch Error:", err);
+    setError(err?.message || "Failed to save campaign");
+  } finally {
+    setSaving(false);
+  }
+};
 
   const handleDelete = async () => {
     if (!confirm(`Delete "${formData.name}"?`)) return;

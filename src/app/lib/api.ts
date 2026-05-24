@@ -165,6 +165,8 @@ export async function updateCampaign(
   id: string,
   updates: Partial<Omit<Campaign, "id" | "created_at" | "updated_at">>
 ) {
+  console.log("🔄 Updating campaign:", { id, updates }); // Debug log
+
   const { data, error } = await supabase
     .from("campaigns")
     .update(updates)
@@ -173,14 +175,21 @@ export async function updateCampaign(
     .single();
 
   if (error) {
-    console.error("Update campaign error:", error);
+    console.error("❌ Supabase Update Error:", {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code,
+      fullError: error
+    });
     throw error;
   }
 
   if (!data) {
-    throw new Error("Campaign not found or you don't have permission to update it.");
+    throw new Error("Campaign not found or access denied.");
   }
 
+  console.log("✅ Campaign updated successfully:", data);
   return data as Campaign;
 }
 
