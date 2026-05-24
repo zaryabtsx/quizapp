@@ -21,6 +21,8 @@ import { CampaignRegister } from "./pages/admin/Campaignregister";
 // Others
 import { SessionExpired } from "./pages/SessionExpired";
 import { NotFound } from "./pages/NotFound";
+import { PrivacyPolicy } from "./pages/PrivacyPolicy";
+import { TermsAndConditions } from "./pages/TermsAndConditions";
 
 export const router = createBrowserRouter([
   {
@@ -35,7 +37,8 @@ export const router = createBrowserRouter([
       { path: "campaign/:campaignId/quiz", element: <CampaignQuiz /> },          // ← new
       { path: "campaign/:campaignId/results", element: <ResultsPage /> },
       { path: "campaign/:campaignId/leaderboard", element: <LeaderboardPage /> },
-
+      { path: "/terms", element: <TermsAndConditions /> },
+      { path: "/privacy", element: <PrivacyPolicy /> },
       // Session Expired
       { path: "session-expired", element: <SessionExpired /> },
 

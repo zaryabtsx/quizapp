@@ -24,6 +24,7 @@ interface LeaderboardEntry {
   score: number;
   total: number;
   percentage: number;
+  elapsed_seconds: number | null;
   completed_at: string;
 }
 
@@ -539,6 +540,7 @@ export function CampaignQuiz() {
         player_email: participant.email,
         score: finalScore, total,
         percentage: Math.round((finalScore / total) * 100),
+        elapsed_seconds: elapsed,
         completed_at: new Date().toISOString(),
       });
     } catch (e) { console.error(e); }
@@ -550,7 +552,7 @@ export function CampaignQuiz() {
     if (!campaignId) return;
     setLoadingLeaderboard(true);
     const { data } = await supabase
-      .from("quiz_results").select("id, player_name, score, total, percentage, completed_at")
+      .from("quiz_results").select("id, player_name, score, total, percentage, elapsed_seconds, completed_at")
       .eq("campaign_id", campaignId)
       .order("percentage", { ascending: false })
       .order("completed_at", { ascending: true })
@@ -692,7 +694,7 @@ export function CampaignQuiz() {
                         {entry.player_name}
                         {isMe && <span className="cq-lb-you">You</span>}
                       </span>
-                      <span className="cq-lb-time">{formatTime(Math.round((new Date(entry.completed_at).getTime() - new Date(participant?.startedAt ?? entry.completed_at).getTime()) / 1000))}</span>
+                      <span className="cq-lb-time">{formatTime(entry.elapsed_seconds ?? 0)}</span>
                       <span className={`cq-lb-place${i === 0 ? " p1" : ""}`}>
                         {RANK_LABELS[i] ?? `#${i+1}`} {RANK_MEDALS[i] ?? ""}
                       </span>
