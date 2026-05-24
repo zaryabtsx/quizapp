@@ -134,19 +134,22 @@ export async function createCampaign(
 ) {
   const { data, error } = await supabase
     .from("campaigns")
-    .insert(campaign)
-    .select()
-    .single();
+    .insert([campaign])
+    .select();
+  
   if (error) throw error;
+  if (!data || data.length === 0) throw new Error("Failed to create campaign");
+
+  const createdCampaign = data[0] as Campaign;
 
   // Log activity
   await supabase.from("activity_log").insert({
     type: "campaign_created",
     description: `New campaign '${campaign.name}' created`,
-    metadata: { campaign_id: data.id },
+    metadata: { campaign_id: createdCampaign.id },
   });
 
-  return data as Campaign;
+  return createdCampaign;
 }
 
 export async function updateCampaign(
@@ -157,10 +160,10 @@ export async function updateCampaign(
     .from("campaigns")
     .update(updates)
     .eq("id", id)
-    .select()
-    .single();
+    .select();
   if (error) throw error;
-  return data as Campaign;
+  if (!data || data.length === 0) throw new Error("Campaign not found");
+  return data[0] as Campaign;
 }
 
 export async function deleteCampaign(id: string) {
@@ -202,15 +205,17 @@ export async function getQuestions(campaignId?: string, opts?: { search?: string
 }
 
 export async function createQuestion(q: Omit<Question, "id" | "created_at" | "updated_at">) {
-  const { data, error } = await supabase.from("questions").insert(q).select().single();
+  const { data, error } = await supabase.from("questions").insert([q]).select();
   if (error) throw error;
-  return data as Question;
+  if (!data || data.length === 0) throw new Error("Failed to create question");
+  return data[0] as Question;
 }
 
 export async function updateQuestion(id: string, updates: Partial<Omit<Question, "id" | "created_at" | "updated_at">>) {
-  const { data, error } = await supabase.from("questions").update(updates).eq("id", id).select().single();
+  const { data, error } = await supabase.from("questions").update(updates).eq("id", id).select();
   if (error) throw error;
-  return data as Question;
+  if (!data || data.length === 0) throw new Error("Question not found");
+  return data[0] as Question;
 }
 
 export async function deleteQuestion(id: string) {
@@ -283,27 +288,31 @@ export async function saveQuizResult(
   }
 
   // Server-side fallback (e.g., if this library is used on server runtime)
-  const { data: participantData, error: participantError } = await supabase
+  const { data: participantDataArr, error: participantError } = await supabase
     .from("participants")
-    .insert(participant)
-    .select()
-    .single();
+    .insert([participant])
+    .select();
 
   if (participantError) throw participantError;
+  if (!participantDataArr || participantDataArr.length === 0) throw new Error("Failed to create participant");
+  const participantData = participantDataArr[0];
 
-  const { data: responseData, error: responseError } = await supabase
+  const { data: responseDataArr, error: responseError } = await supabase
     .from("responses")
-    .insert({
-      campaign_id: response.campaign_id,
-      participant_id: participantData.id,
-      score: response.score,
-      time_taken: response.time_taken,
-      completed_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
+    .insert([
+      {
+        campaign_id: response.campaign_id,
+        participant_id: participantData.id,
+        score: response.score,
+        time_taken: response.time_taken,
+        completed_at: new Date().toISOString(),
+      },
+    ])
+    .select();
 
   if (responseError) throw responseError;
+  if (!responseDataArr || responseDataArr.length === 0) throw new Error("Failed to create response");
+  const responseData = responseDataArr[0];
 
   // Insert leaderboard entry and recalculate ranks (best score first, then shortest time)
   try {
@@ -359,12 +368,12 @@ export async function saveParticipantRegistration(
 
     const { data, error } = await supabase
       .from("participants")
-      .insert(payload)
-      .select()
-      .single();
+      .insert([payload])
+      .select();
 
     if (error) throw error;
-    return data;
+    if (!data || data.length === 0) throw new Error("Failed to create participant");
+    return data[0];
   } catch (err) {
     console.warn("Failed to save participant registration:", err);
     // Don't throw - registration should continue even if DB fails
@@ -390,9 +399,10 @@ export async function getLeaderboard(campaignId?: string, limit = 50) {
 
 // Update a single leaderboard row
 export async function updateLeaderboardEntry(id: string, updates: Record<string, any>) {
-  const { data, error } = await supabase.from("leaderboard").update(updates).eq("id", id).select().single();
+  const { data, error } = await supabase.from("leaderboard").update(updates).eq("id", id).select();
   if (error) throw error;
-  return data;
+  if (!data || data.length === 0) throw new Error("Leaderboard entry not found");
+  return data[0];
 }
 
 // Delete a leaderboard row
