@@ -16,6 +16,8 @@ export function LandingPage() {
     icon: "🎯"
   };
 
+  
+
   const handleStartQuiz = () => {
     setIsLoading(true);
     setTimeout(() => {
