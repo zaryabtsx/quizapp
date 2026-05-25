@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 // User Pages
 import { LandingPage } from "./pages/LandingPage";
 import { ResultsPage } from "./pages/ResultsPage";
-import { LeaderboardPage } from "./pages/LeaderboardPage";
+// import { AdminLeaderboard } from "./pages/AdminLeaderboard";
 
 // Admin Pages
 import { AdminLogin } from "./pages/admin/AdminLogin";
@@ -36,7 +36,7 @@ export const router = createBrowserRouter([
       { path: "campaign/:campaignId/register", element: <CampaignRegister /> },  // ← new
       { path: "campaign/:campaignId/quiz", element: <CampaignQuiz /> },          // ← new
       { path: "campaign/:campaignId/results", element: <ResultsPage /> },
-      { path: "campaign/:campaignId/leaderboard", element: <LeaderboardPage /> },
+      { path: "campaign/:campaignId/leaderboard", element: <AdminLeaderboard /> },
       { path: "/terms", element: <TermsAndConditions /> },
       { path: "/privacy", element: <PrivacyPolicy /> },
       // Session Expired

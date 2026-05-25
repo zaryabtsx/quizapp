@@ -338,6 +338,7 @@ export function CampaignRegister() {
       `quiz_participant_${campaignId}`,
       JSON.stringify({
         name: user.name,
+        mobile: user.mobile,
         email: user.email || null,
         startedAt: new Date().toISOString(),
       })

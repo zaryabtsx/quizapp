@@ -1,49 +1,618 @@
+// // src/lib/api.ts
+// // Centralised data-access layer — all Supabase queries live here.
+
+// import { supabase } from "./supabase";
+// import type { Campaign, Question, QuizAttempt, ActivityLog } from "../types/database";
+
+// // ─── DASHBOARD ───────────────────────────────────────────────────────────────
+
+// export async function getDashboardStats() {
+//   const [
+//     // FIX 8: "totalParticipants" now counts rows in the `participants` table
+//     // (written at registration time) so it reflects people who signed up,
+//     // not just people who finished. "totalCompletions" counts quiz_attempts.
+//     { count: totalParticipants },
+//     { count: totalCompletions },
+//     { count: activeCampaigns },
+//     attemptsRes,
+//     topRes,
+//     activityRes,
+//     participantsOverTimeRes,
+//     // FIX (N+1): fetch all active campaigns + their attempt counts in two
+//     // queries instead of one query + N per-campaign queries.
+//     campaignsRes,
+//     campaignAttemptsRes,
+//   ] = await Promise.all([
+//     supabase.from("participants").select("*", { count: "exact", head: true }),
+//     supabase.from("quiz_attempts").select("*", { count: "exact", head: true }),
+//     supabase.from("campaigns").select("*", { count: "exact", head: true }).eq("is_active", true),
+
+//     // FIX (completionRate): count ALL attempts — completion = "submitted",
+//     // not "got a perfect score". We just need total rows vs started rows.
+//     // Because every row in quiz_attempts represents a submission, the rate
+//     // is always 100% at the attempt level. To be meaningful we compare
+//     // quiz_attempts against a "quiz_started" event if you log one, or fall
+//     // back to: completionRate = attempts that have total > 0 / total rows.
+//     supabase
+//       .from("quiz_attempts")
+//       .select("score, total, completed_at")
+//       .not("total", "is", null),
+
+//     // FIX (topPerformer): order by actual score & time instead of relying
+//     // on the `rank` integer which can go stale after manual adjustments.
+//     supabase
+//       .from("leaderboard")
+//       .select("participant_name, score, total")
+//       .order("score", { ascending: false })
+//       .order("time_taken", { ascending: true })
+//       .limit(1)
+//       .maybeSingle(),
+
+//     supabase
+//       .from("activity_log")
+//       .select("*")
+//       .order("created_at", { ascending: false })
+//       .limit(10),
+
+//     supabase
+//       .from("quiz_attempts")
+//       .select("completed_at")
+//       .gte(
+//         "completed_at",
+//         new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+//       ),
+
+//     // FIX (N+1 part 1): fetch the campaign list once
+//     supabase
+//       .from("campaigns")
+//       .select("id, name")
+//       .eq("is_active", true)
+//       .limit(6),
+
+//     // FIX (N+1 part 2): fetch ALL attempts for those campaigns in one query.
+//     // We'll group by campaign_id in JS.
+//     supabase
+//       .from("quiz_attempts")
+//       .select("campaign_id, score, total")
+//       .eq("campaigns.is_active", true), // joined filter — falls back gracefully
+//   ]);
+
+//   // ── completionRate ─────────────────────────────────────────────────────────
+//   // FIX: "completion rate" = % of attempts where `total` is set and > 0,
+//   // meaning the quiz ran to the end. (If you log quiz_started separately,
+//   // swap denominator for that count.)
+//   const attempts = attemptsRes.data ?? [];
+//   const submitted = attempts.filter((a) => Number(a.total) > 0).length;
+//   const completionRate =
+//     attempts.length > 0 ? Math.round((submitted / attempts.length) * 100) : 0;
+
+//   // ── participantsOverTime ───────────────────────────────────────────────────
+//   const buckets: Record<string, number> = {};
+//   for (let i = 6; i >= 0; i--) {
+//     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+//     const key = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+//     buckets[key] = 0;
+//   }
+//   (participantsOverTimeRes.data ?? []).forEach((a) => {
+//     const key = new Date(a.completed_at).toLocaleDateString("en-US", {
+//       month: "short",
+//       day: "numeric",
+//     });
+//     if (key in buckets) buckets[key]++;
+//   });
+//   const participantsOverTime = Object.entries(buckets).map(([date, count]) => ({
+//     date,
+//     count,
+//   }));
+
+//   // ── campaignPerf (FIX: no N+1) ────────────────────────────────────────────
+//   const campaigns = campaignsRes.data ?? [];
+//   // Group all attempts by campaign_id in a single pass
+//   const attemptsByCampaign: Record<
+//     string,
+//     { score: number; total: number }[]
+//   > = {};
+//   (campaignAttemptsRes.data ?? []).forEach((a: any) => {
+//     if (!a.campaign_id) return;
+//     if (!attemptsByCampaign[a.campaign_id])
+//       attemptsByCampaign[a.campaign_id] = [];
+//     attemptsByCampaign[a.campaign_id].push({
+//       score: Number(a.score),
+//       total: Number(a.total),
+//     });
+//   });
+
+//   const campaignPerf = campaigns.map((c) => {
+//     const atts = attemptsByCampaign[c.id] ?? [];
+//     const comp =
+//       atts.length > 0
+//         ? Math.round(
+//             (atts.filter((a) => a.total > 0).length / atts.length) * 100
+//           )
+//         : 0;
+//     return { name: c.name, participants: atts.length, completion: comp };
+//   });
+
+//   return {
+//     totalParticipants: totalParticipants ?? 0,   // registered users (participants table)
+//     totalCompletions: totalCompletions ?? 0,      // finished quizzes (quiz_attempts table)
+//     activeCampaigns: activeCampaigns ?? 0,
+//     completionRate,
+//     topPerformer: topRes.data ?? null,
+//     activities: activityRes.data ?? [],
+//     participantsOverTime,
+//     campaignPerf,
+//   };
+// }
+
+// // ─── CAMPAIGNS ───────────────────────────────────────────────────────────────
+
+// export async function getCampaigns() {
+//   const { data, error } = await supabase
+//     .from("campaigns")
+//     .select("*")
+//     .order("created_at", { ascending: false });
+//   if (error) throw error;
+//   return data as Campaign[];
+// }
+
+// export async function getCampaign(id: string) {
+//   const { data, error } = await supabase
+//     .from("campaigns")
+//     .select("*")
+//     .eq("id", id)
+//     .maybeSingle();
+
+//   if (error) {
+//     console.error("Supabase getCampaign error:", error);
+//     throw new Error(error.message);
+//   }
+
+//   if (!data) {
+//     throw new Error("Campaign not found or you don't have permission to view it.");
+//   }
+
+//   return data as Campaign;
+// }
+
+// export async function createCampaign(
+//   campaign: Omit<Campaign, "id" | "created_at" | "updated_at">
+// ) {
+//   const { data, error } = await supabase
+//     .from("campaigns")
+//     .insert([campaign])
+//     .select();
+
+//   if (error) throw error;
+//   if (!data || data.length === 0) throw new Error("Failed to create campaign");
+
+//   const createdCampaign = data[0] as Campaign;
+
+//   await supabase.from("activity_log").insert({
+//     type: "campaign_created",
+//     description: `New campaign '${campaign.name}' created`,
+//     metadata: { campaign_id: createdCampaign.id },
+//   });
+
+//   return createdCampaign;
+// }
+
+// export async function updateCampaign(
+//   id: string,
+//   updates: Partial<Omit<Campaign, "id" | "created_at" | "updated_at">>
+// ) {
+//   const { data, error } = await supabase
+//     .from("campaigns")
+//     .update(updates)
+//     .eq("id", id)
+//     .select();
+
+//   if (error) throw error;
+
+//   if (!data || data.length === 0) {
+//     return { id, ...updates } as Campaign;
+//   }
+
+//   return data[0] as Campaign;
+// }
+
+// export async function deleteCampaign(id: string) {
+//   const { error } = await supabase.from("campaigns").delete().eq("id", id);
+//   if (error) throw error;
+// }
+
+// export async function uploadBanner(file: File, campaignId: string): Promise<string> {
+//   const ext = file.name.split(".").pop();
+//   const path = `banners/${campaignId}.${ext}`;
+//   const { error } = await supabase.storage
+//     .from("campaign-assets-new")
+//     .upload(path, file, { upsert: true });
+//   if (error) throw error;
+//   const { data } = supabase.storage.from("campaign-assets-new").getPublicUrl(path);
+//   return data.publicUrl;
+// }
+
+// // ─── QUESTIONS ───────────────────────────────────────────────────────────────
+
+// export async function getQuestions(
+//   campaignId?: string,
+//   opts?: {
+//     search?: string;
+//     difficulty?: string;
+//     page?: number;
+//     pageSize?: number;
+//   }
+// ) {
+//   let query = supabase.from("questions").select("*", { count: "exact" });
+
+//   if (campaignId) query = query.eq("campaign_id", campaignId);
+//   if (opts?.search) query = query.ilike("text", `%${opts.search}%`);
+//   if (opts?.difficulty && opts.difficulty !== "all")
+//     query = query.eq("difficulty", opts.difficulty);
+
+//   const pageSize = opts?.pageSize ?? 25;
+//   const page = opts?.page ?? 0;
+//   query = query
+//     .order("created_at", { ascending: false })
+//     .range(page * pageSize, (page + 1) * pageSize - 1);
+
+//   const { data, error, count } = await query;
+//   if (error) throw error;
+//   return { data: data as Question[], count: count ?? 0 };
+// }
+
+// export async function createQuestion(
+//   q: Omit<Question, "id" | "created_at" | "updated_at">
+// ) {
+//   const { data, error } = await supabase.from("questions").insert([q]).select();
+//   if (error) throw error;
+//   if (!data || data.length === 0) throw new Error("Failed to create question");
+//   return data[0] as Question;
+// }
+
+// export async function updateQuestion(
+//   id: string,
+//   updates: Partial<Omit<Question, "id" | "created_at" | "updated_at">>
+// ) {
+//   const { data, error } = await supabase
+//     .from("questions")
+//     .update(updates)
+//     .eq("id", id)
+//     .select();
+//   if (error) throw error;
+//   if (!data || data.length === 0) throw new Error("Question not found");
+//   return data[0] as Question;
+// }
+
+// export async function deleteQuestion(id: string) {
+//   const { error } = await supabase.from("questions").delete().eq("id", id);
+//   if (error) throw error;
+// }
+
+// export async function deleteQuestions(ids: string[]) {
+//   const { error } = await supabase.from("questions").delete().in("id", ids);
+//   if (error) throw error;
+// }
+
+// export async function bulkImportQuestions(
+//   rows: Array<{
+//     text: string;
+//     difficulty: string;
+//     options: string[];
+//     correct_index: number;
+//   }>,
+//   campaignId: string
+// ) {
+//   const payload = rows.map((r) => ({
+//     campaign_id: campaignId,
+//     text: r.text,
+//     difficulty: r.difficulty as Question["difficulty"],
+//     options: r.options,
+//     correct_index: r.correct_index,
+//   }));
+//   const { data, error } = await supabase.from("questions").insert(payload).select();
+//   if (error) throw error;
+
+//   await supabase.from("activity_log").insert({
+//     type: "question_uploaded",
+//     description: `${rows.length} questions uploaded`,
+//     metadata: { campaign_id: campaignId, count: rows.length },
+//   });
+
+//   return data as Question[];
+// }
+
+// // ─── QUIZ RESULTS ─────────────────────────────────────────────────────────────
+
+// type ParticipantPayload = {
+//   full_name: string;
+//   email: string | null;
+//   mobile: string;
+// };
+
+// type ResponsePayload = {
+//   campaign_id: string;
+//   score: number;
+//   time_taken: number;
+//   total?: number;
+// };
+
+// export async function saveQuizResult(
+//   participant: ParticipantPayload,
+//   response: ResponsePayload
+// ) {
+//   // Step 1: Upsert user into `users` table (by mobile)
+//   const { error: userError } = await supabase
+//     .from("users")
+//     .upsert(
+//       {
+//         name: participant.full_name,
+//         mobile: participant.mobile,
+//         email: participant.email ?? null,
+//       },
+//       { onConflict: "mobile" }
+//     )
+//     .select();
+
+//   if (userError) {
+//     console.error("Failed to upsert user:", userError);
+//     // Non-fatal — continue
+//   }
+
+//   // Step 2: Insert into `participants`
+//   const { data: participantDataArr, error: participantError } = await supabase
+//     .from("participants")
+//     .insert([
+//       {
+//         full_name: participant.full_name,
+//         email: participant.email,
+//         mobile: participant.mobile,
+//         campaign_id: response.campaign_id || null,
+//         registered_at: new Date().toISOString(),
+//       },
+//     ])
+//     .select();
+
+//   if (participantError) throw participantError;
+//   if (!participantDataArr || participantDataArr.length === 0)
+//     throw new Error("Failed to create participant");
+
+//   const participantData = participantDataArr[0];
+
+//   // Step 3: Insert into `responses`
+//   const { data: responseDataArr, error: responseError } = await supabase
+//     .from("responses")
+//     .insert([
+//       {
+//         campaign_id: response.campaign_id,
+//         participant_id: participantData.id,
+//         score: response.score,
+//         time_taken: response.time_taken,
+//         completed_at: new Date().toISOString(),
+//       },
+//     ])
+//     .select();
+
+//   if (responseError) throw responseError;
+//   if (!responseDataArr || responseDataArr.length === 0)
+//     throw new Error("Failed to create response");
+
+//   const responseData = responseDataArr[0];
+
+//   // Step 4: Insert into `leaderboard` and recalculate ranks
+//   try {
+//     const { error: lbError } = await supabase.from("leaderboard").insert({
+//       campaign_id: response.campaign_id,
+//       participant_name: participant.full_name,
+//       participant_email: participant.email,
+//       participant_mobile: participant.mobile,
+//       score: response.score,
+//       total: response.total ?? 0,
+//       time_taken: response.time_taken,
+//       completed_at: new Date().toISOString(),
+//     });
+
+//     if (lbError) {
+//       console.error("Leaderboard insert error:", lbError);
+//     } else {
+//       const { data: ordered } = await supabase
+//         .from("leaderboard")
+//         .select("id, score, time_taken")
+//         .eq("campaign_id", response.campaign_id)
+//         .order("score", { ascending: false })
+//         .order("time_taken", { ascending: true });
+
+//       if (ordered && ordered.length) {
+//         for (let i = 0; i < ordered.length; i++) {
+//           await supabase
+//             .from("leaderboard")
+//             .update({ rank: i + 1 })
+//             .eq("id", ordered[i].id);
+//         }
+//       }
+//     }
+//   } catch (err) {
+//     console.error("Failed to insert/update leaderboard:", err);
+//   }
+
+//   // Step 5: Log activity
+//   try {
+//     await supabase.from("activity_log").insert({
+//       type: "quiz_completed",
+//       description: `${participant.full_name} completed the quiz with score ${response.score}/${response.total ?? 0}`,
+//       metadata: {
+//         campaign_id: response.campaign_id,
+//         score: response.score,
+//         time_taken: response.time_taken,
+//       },
+//     });
+//   } catch (_) {
+//     // Non-fatal
+//   }
+
+//   return { participant: participantData, response: responseData };
+// }
+
+// // ─── PARTICIPANTS ────────────────────────────────────────────────────────────
+
+// export async function saveParticipantRegistration(
+//   participant: ParticipantPayload,
+//   campaignId?: string
+// ) {
+//   try {
+//     const payload: any = {
+//       full_name: participant.full_name,
+//       email: participant.email,
+//       mobile: participant.mobile,
+//       registered_at: new Date().toISOString(),
+//     };
+
+//     if (campaignId) {
+//       payload.campaign_id = campaignId;
+//     }
+
+//     const { data, error } = await supabase
+//       .from("participants")
+//       .insert([payload])
+//       .select();
+
+//     if (error) throw error;
+//     if (!data || data.length === 0) throw new Error("Failed to create participant");
+//     return data[0];
+//   } catch (err) {
+//     console.warn("Failed to save participant registration:", err);
+//     return null;
+//   }
+// }
+
+// // ─── LEADERBOARD ─────────────────────────────────────────────────────────────
+
+// export async function getLeaderboard(campaignId?: string, limit = 50) {
+//   let query = supabase
+//     .from("leaderboard")
+//     .select("*")
+//     .order("rank", { ascending: true })
+//     .limit(limit);
+
+//   if (campaignId) query = query.eq("campaign_id", campaignId);
+
+//   const { data, error } = await query;
+//   if (error) throw error;
+//   return data;
+// }
+
+// export async function updateLeaderboardEntry(
+//   id: string,
+//   updates: Record<string, any>
+// ) {
+//   const { data, error } = await supabase
+//     .from("leaderboard")
+//     .update(updates)
+//     .eq("id", id)
+//     .select();
+//   if (error) throw error;
+//   if (!data || data.length === 0) throw new Error("Leaderboard entry not found");
+//   return data[0];
+// }
+
+// export async function deleteLeaderboardEntry(id: string) {
+//   const { error } = await supabase.from("leaderboard").delete().eq("id", id);
+//   if (error) throw error;
+//   return true;
+// }
+
+// export async function adjustLeaderboardRank(
+//   campaignId: string,
+//   entryId: string,
+//   newRank: number
+// ) {
+//   const { data: current } = await supabase
+//     .from("leaderboard")
+//     .select("id")
+//     .eq("campaign_id", campaignId)
+//     .order("rank", { ascending: true });
+
+//   if (!current) return null;
+
+//   const ids = current.map((r: any) => r.id).filter(Boolean);
+//   const idx = ids.indexOf(entryId);
+//   if (idx === -1) return null;
+//   ids.splice(idx, 1);
+//   const insertAt = Math.max(0, Math.min(newRank - 1, ids.length));
+//   ids.splice(insertAt, 0, entryId);
+
+//   for (let i = 0; i < ids.length; i++) {
+//     await supabase.from("leaderboard").update({ rank: i + 1 }).eq("id", ids[i]);
+//   }
+
+//   return true;
+// }
+
+// // ─── ACTIVITY LOG ─────────────────────────────────────────────────────────────
+
+// export async function getRecentActivity(limit = 10) {
+//   const { data, error } = await supabase
+//     .from("activity_log")
+//     .select("*")
+//     .order("created_at", { ascending: false })
+//     .limit(limit);
+//   if (error) throw error;
+//   return data as ActivityLog[];
+// }
+
+// export async function logActivity(entry: Omit<ActivityLog, "id" | "created_at">) {
+//   const { error } = await supabase.from("activity_log").insert(entry);
+//   if (error) throw error;
+// }
+
 // src/lib/api.ts
 // Centralised data-access layer — all Supabase queries live here.
+//
+// ARCHITECTURE NOTE: `leaderboard` is a Postgres VIEW built from:
+//   responses JOIN participants JOIN campaigns
+// This means:
+//   ✅ SELECT from leaderboard — works fine
+//   ❌ INSERT into leaderboard — impossible (view, not table)
+//   ❌ UPDATE rank on leaderboard — rank is computed by the view
+//   ❌ DELETE from leaderboard — must delete from `responses` instead
+//
+// Column name: the view exposes `total_questions` (from the responses table),
+// NOT `total`. All code reads `total_questions` from leaderboard rows.
 
 import { supabase } from "./supabase";
-import type { Campaign, Question, QuizAttempt, ActivityLog } from "../types/database";
+import type { Campaign, Question, ActivityLog } from "../types/database";
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 
 export async function getDashboardStats() {
   const [
-    // FIX 8: "totalParticipants" now counts rows in the `participants` table
-    // (written at registration time) so it reflects people who signed up,
-    // not just people who finished. "totalCompletions" counts quiz_attempts.
     { count: totalParticipants },
     { count: totalCompletions },
     { count: activeCampaigns },
-    attemptsRes,
-    topRes,
+    responsesRes,          // for completionRate
+    topRes,                // top performer from the view (SELECT is fine)
     activityRes,
-    participantsOverTimeRes,
-    // FIX (N+1): fetch all active campaigns + their attempt counts in two
-    // queries instead of one query + N per-campaign queries.
+    responsesOverTimeRes,  // for the 7-day chart
     campaignsRes,
-    campaignAttemptsRes,
+    campaignResponsesRes,
   ] = await Promise.all([
+    // Registrations (written by saveParticipantRegistration at form submit)
     supabase.from("participants").select("*", { count: "exact", head: true }),
-    supabase.from("quiz_attempts").select("*", { count: "exact", head: true }),
+    // Completions (written by saveQuizResult → responses table)
+    supabase.from("responses").select("*", { count: "exact", head: true }),
     supabase.from("campaigns").select("*", { count: "exact", head: true }).eq("is_active", true),
 
-    // FIX (completionRate): count ALL attempts — completion = "submitted",
-    // not "got a perfect score". We just need total rows vs started rows.
-    // Because every row in quiz_attempts represents a submission, the rate
-    // is always 100% at the attempt level. To be meaningful we compare
-    // quiz_attempts against a "quiz_started" event if you log one, or fall
-    // back to: completionRate = attempts that have total > 0 / total rows.
+    // completionRate: responses with total_questions > 0 vs all responses
     supabase
-      .from("quiz_attempts")
-      .select("score, total, completed_at")
-      .not("total", "is", null),
+      .from("responses")
+      .select("score, total_questions, completed_at")
+      .not("total_questions", "is", null),
 
-    // FIX (topPerformer): order by actual score & time instead of relying
-    // on the `rank` integer which can go stale after manual adjustments.
+    // Top performer: read from view (SELECT is fine), order by score + time
     supabase
       .from("leaderboard")
-      .select("participant_name, score, total")
-      .order("score", { ascending: false })
+      .select("participant_name, score, total_questions")
+      .order("score",      { ascending: false })
       .order("time_taken", { ascending: true })
       .limit(1)
       .maybeSingle(),
@@ -54,92 +623,71 @@ export async function getDashboardStats() {
       .order("created_at", { ascending: false })
       .limit(10),
 
+    // 7-day chart uses `responses.completed_at`
     supabase
-      .from("quiz_attempts")
+      .from("responses")
       .select("completed_at")
-      .gte(
-        "completed_at",
-        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-      ),
+      .gte("completed_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
 
-    // FIX (N+1 part 1): fetch the campaign list once
     supabase
       .from("campaigns")
       .select("id, name")
       .eq("is_active", true)
       .limit(6),
 
-    // FIX (N+1 part 2): fetch ALL attempts for those campaigns in one query.
-    // We'll group by campaign_id in JS.
+    // All responses for active campaigns — grouped in JS (no N+1)
     supabase
-      .from("quiz_attempts")
-      .select("campaign_id, score, total")
-      .eq("campaigns.is_active", true), // joined filter — falls back gracefully
+      .from("responses")
+      .select("campaign_id, score, total_questions"),
   ]);
 
-  // ── completionRate ─────────────────────────────────────────────────────────
-  // FIX: "completion rate" = % of attempts where `total` is set and > 0,
-  // meaning the quiz ran to the end. (If you log quiz_started separately,
-  // swap denominator for that count.)
-  const attempts = attemptsRes.data ?? [];
-  const submitted = attempts.filter((a) => Number(a.total) > 0).length;
+  // completionRate: responses where total_questions > 0 / all responses
+  const responses = responsesRes.data ?? [];
+  const submitted = responses.filter((r) => Number(r.total_questions) > 0).length;
   const completionRate =
-    attempts.length > 0 ? Math.round((submitted / attempts.length) * 100) : 0;
+    responses.length > 0 ? Math.round((submitted / responses.length) * 100) : 0;
 
-  // ── participantsOverTime ───────────────────────────────────────────────────
+  // 7-day participation chart
   const buckets: Record<string, number> = {};
   for (let i = 6; i >= 0; i--) {
     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
-    const key = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    buckets[key] = 0;
+    buckets[d.toLocaleDateString("en-US", { month: "short", day: "numeric" })] = 0;
   }
-  (participantsOverTimeRes.data ?? []).forEach((a) => {
-    const key = new Date(a.completed_at).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
+  (responsesOverTimeRes.data ?? []).forEach((r) => {
+    const key = new Date(r.completed_at).toLocaleDateString("en-US", {
+      month: "short", day: "numeric",
     });
     if (key in buckets) buckets[key]++;
   });
-  const participantsOverTime = Object.entries(buckets).map(([date, count]) => ({
-    date,
-    count,
-  }));
+  const participantsOverTime = Object.entries(buckets).map(([date, count]) => ({ date, count }));
 
-  // ── campaignPerf (FIX: no N+1) ────────────────────────────────────────────
+  // Campaign performance — one pass, no N+1
   const campaigns = campaignsRes.data ?? [];
-  // Group all attempts by campaign_id in a single pass
-  const attemptsByCampaign: Record<
-    string,
-    { score: number; total: number }[]
-  > = {};
-  (campaignAttemptsRes.data ?? []).forEach((a: any) => {
-    if (!a.campaign_id) return;
-    if (!attemptsByCampaign[a.campaign_id])
-      attemptsByCampaign[a.campaign_id] = [];
-    attemptsByCampaign[a.campaign_id].push({
-      score: Number(a.score),
-      total: Number(a.total),
+  const responsesByCampaign: Record<string, { score: number; total_questions: number }[]> = {};
+  (campaignResponsesRes.data ?? []).forEach((r: any) => {
+    if (!r.campaign_id) return;
+    if (!responsesByCampaign[r.campaign_id]) responsesByCampaign[r.campaign_id] = [];
+    responsesByCampaign[r.campaign_id].push({
+      score:           Number(r.score),
+      total_questions: Number(r.total_questions),
     });
   });
 
   const campaignPerf = campaigns.map((c) => {
-    const atts = attemptsByCampaign[c.id] ?? [];
-    const comp =
-      atts.length > 0
-        ? Math.round(
-            (atts.filter((a) => a.total > 0).length / atts.length) * 100
-          )
-        : 0;
+    const atts = responsesByCampaign[c.id] ?? [];
+    const comp = atts.length > 0
+      ? Math.round((atts.filter((a) => a.total_questions > 0).length / atts.length) * 100)
+      : 0;
     return { name: c.name, participants: atts.length, completion: comp };
   });
 
   return {
-    totalParticipants: totalParticipants ?? 0,   // registered users (participants table)
-    totalCompletions: totalCompletions ?? 0,      // finished quizzes (quiz_attempts table)
-    activeCampaigns: activeCampaigns ?? 0,
+    totalParticipants: totalParticipants ?? 0,   // registered (participants table)
+    totalCompletions:  totalCompletions  ?? 0,   // finished quizzes (responses table)
+    activeCampaigns:   activeCampaigns   ?? 0,
     completionRate,
-    topPerformer: topRes.data ?? null,
-    activities: activityRes.data ?? [],
+    topPerformer: topRes.data ?? null,           // { participant_name, score, total_questions }
+    activities:   activityRes.data ?? [],
     participantsOverTime,
     campaignPerf,
   };
@@ -162,58 +710,33 @@ export async function getCampaign(id: string) {
     .select("*")
     .eq("id", id)
     .maybeSingle();
-
-  if (error) {
-    console.error("Supabase getCampaign error:", error);
-    throw new Error(error.message);
-  }
-
-  if (!data) {
-    throw new Error("Campaign not found or you don't have permission to view it.");
-  }
-
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Campaign not found or you don't have permission to view it.");
   return data as Campaign;
 }
 
 export async function createCampaign(
   campaign: Omit<Campaign, "id" | "created_at" | "updated_at">
 ) {
-  const { data, error } = await supabase
-    .from("campaigns")
-    .insert([campaign])
-    .select();
-
+  const { data, error } = await supabase.from("campaigns").insert([campaign]).select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Failed to create campaign");
-
-  const createdCampaign = data[0] as Campaign;
-
+  const created = data[0] as Campaign;
   await supabase.from("activity_log").insert({
     type: "campaign_created",
     description: `New campaign '${campaign.name}' created`,
-    metadata: { campaign_id: createdCampaign.id },
+    metadata: { campaign_id: created.id },
   });
-
-  return createdCampaign;
+  return created;
 }
 
 export async function updateCampaign(
   id: string,
   updates: Partial<Omit<Campaign, "id" | "created_at" | "updated_at">>
 ) {
-  const { data, error } = await supabase
-    .from("campaigns")
-    .update(updates)
-    .eq("id", id)
-    .select();
-
+  const { data, error } = await supabase.from("campaigns").update(updates).eq("id", id).select();
   if (error) throw error;
-
-  if (!data || data.length === 0) {
-    return { id, ...updates } as Campaign;
-  }
-
-  return data[0] as Campaign;
+  return (data?.[0] ?? { id, ...updates }) as Campaign;
 }
 
 export async function deleteCampaign(id: string) {
@@ -222,36 +745,28 @@ export async function deleteCampaign(id: string) {
 }
 
 export async function uploadBanner(file: File, campaignId: string): Promise<string> {
-  const ext = file.name.split(".").pop();
+  const ext  = file.name.split(".").pop();
   const path = `banners/${campaignId}.${ext}`;
   const { error } = await supabase.storage
-    .from("campaign-assets-new")
+    .from("campaign-assets")
     .upload(path, file, { upsert: true });
   if (error) throw error;
-  const { data } = supabase.storage.from("campaign-assets-new").getPublicUrl(path);
-  return data.publicUrl;
+  return supabase.storage.from("campaign-assets").getPublicUrl(path).data.publicUrl;
 }
 
 // ─── QUESTIONS ───────────────────────────────────────────────────────────────
 
 export async function getQuestions(
   campaignId?: string,
-  opts?: {
-    search?: string;
-    difficulty?: string;
-    page?: number;
-    pageSize?: number;
-  }
+  opts?: { search?: string; difficulty?: string; page?: number; pageSize?: number }
 ) {
   let query = supabase.from("questions").select("*", { count: "exact" });
-
-  if (campaignId) query = query.eq("campaign_id", campaignId);
-  if (opts?.search) query = query.ilike("text", `%${opts.search}%`);
-  if (opts?.difficulty && opts.difficulty !== "all")
-    query = query.eq("difficulty", opts.difficulty);
+  if (campaignId)                               query = query.eq("campaign_id", campaignId);
+  if (opts?.search)                             query = query.ilike("text", `%${opts.search}%`);
+  if (opts?.difficulty && opts.difficulty !== "all") query = query.eq("difficulty", opts.difficulty);
 
   const pageSize = opts?.pageSize ?? 25;
-  const page = opts?.page ?? 0;
+  const page     = opts?.page     ?? 0;
   query = query
     .order("created_at", { ascending: false })
     .range(page * pageSize, (page + 1) * pageSize - 1);
@@ -261,9 +776,7 @@ export async function getQuestions(
   return { data: data as Question[], count: count ?? 0 };
 }
 
-export async function createQuestion(
-  q: Omit<Question, "id" | "created_at" | "updated_at">
-) {
+export async function createQuestion(q: Omit<Question, "id" | "created_at" | "updated_at">) {
   const { data, error } = await supabase.from("questions").insert([q]).select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Failed to create question");
@@ -274,11 +787,7 @@ export async function updateQuestion(
   id: string,
   updates: Partial<Omit<Question, "id" | "created_at" | "updated_at">>
 ) {
-  const { data, error } = await supabase
-    .from("questions")
-    .update(updates)
-    .eq("id", id)
-    .select();
+  const { data, error } = await supabase.from("questions").update(updates).eq("id", id).select();
   if (error) throw error;
   if (!data || data.length === 0) throw new Error("Question not found");
   return data[0] as Question;
@@ -295,34 +804,29 @@ export async function deleteQuestions(ids: string[]) {
 }
 
 export async function bulkImportQuestions(
-  rows: Array<{
-    text: string;
-    difficulty: string;
-    options: string[];
-    correct_index: number;
-  }>,
+  rows: Array<{ text: string; difficulty: string; options: string[]; correct_index: number }>,
   campaignId: string
 ) {
   const payload = rows.map((r) => ({
-    campaign_id: campaignId,
-    text: r.text,
-    difficulty: r.difficulty as Question["difficulty"],
-    options: r.options,
+    campaign_id:   campaignId,
+    text:          r.text,
+    difficulty:    r.difficulty as Question["difficulty"],
+    options:       r.options,
     correct_index: r.correct_index,
   }));
   const { data, error } = await supabase.from("questions").insert(payload).select();
   if (error) throw error;
-
   await supabase.from("activity_log").insert({
     type: "question_uploaded",
     description: `${rows.length} questions uploaded`,
     metadata: { campaign_id: campaignId, count: rows.length },
   });
-
   return data as Question[];
 }
 
 // ─── QUIZ RESULTS ─────────────────────────────────────────────────────────────
+// The leaderboard is a VIEW — never insert/update/delete it directly.
+// Write to `participants` + `responses`; the view reflects those automatically.
 
 type ParticipantPayload = {
   full_name: string;
@@ -334,123 +838,69 @@ type ResponsePayload = {
   campaign_id: string;
   score: number;
   time_taken: number;
-  total?: number;
+  total_questions?: number;   // renamed from `total` to match the real column
 };
 
 export async function saveQuizResult(
   participant: ParticipantPayload,
   response: ResponsePayload
 ) {
-  // Step 1: Upsert user into `users` table (by mobile)
+  // ── Step 1: Upsert into `users` (non-fatal) ───────────────────────────────
   const { error: userError } = await supabase
     .from("users")
     .upsert(
-      {
-        name: participant.full_name,
-        mobile: participant.mobile,
-        email: participant.email ?? null,
-      },
+      { name: participant.full_name, mobile: participant.mobile, email: participant.email ?? null },
       { onConflict: "mobile" }
-    )
-    .select();
+    );
+  if (userError) console.error("Failed to upsert user:", userError);
 
-  if (userError) {
-    console.error("Failed to upsert user:", userError);
-    // Non-fatal — continue
-  }
-
-  // Step 2: Insert into `participants`
-  const { data: participantDataArr, error: participantError } = await supabase
+  // ── Step 2: Insert into `participants` ────────────────────────────────────
+  const { data: pRows, error: participantError } = await supabase
     .from("participants")
-    .insert([
-      {
-        full_name: participant.full_name,
-        email: participant.email,
-        mobile: participant.mobile,
-        campaign_id: response.campaign_id || null,
-        registered_at: new Date().toISOString(),
-      },
-    ])
+    .insert([{
+      full_name:     participant.full_name,
+      email:         participant.email,
+      mobile:        participant.mobile,
+      campaign_id:   response.campaign_id || null,
+      registered_at: new Date().toISOString(),
+    }])
     .select();
 
   if (participantError) throw participantError;
-  if (!participantDataArr || participantDataArr.length === 0)
-    throw new Error("Failed to create participant");
+  if (!pRows || pRows.length === 0) throw new Error("Failed to create participant");
+  const participantData = pRows[0];
 
-  const participantData = participantDataArr[0];
-
-  // Step 3: Insert into `responses`
-  const { data: responseDataArr, error: responseError } = await supabase
+  // ── Step 3: Insert into `responses` ──────────────────────────────────────
+  // This is the only write needed — the leaderboard view reads from here.
+  const { data: rRows, error: responseError } = await supabase
     .from("responses")
-    .insert([
-      {
-        campaign_id: response.campaign_id,
-        participant_id: participantData.id,
-        score: response.score,
-        time_taken: response.time_taken,
-        completed_at: new Date().toISOString(),
-      },
-    ])
+    .insert([{
+      campaign_id:     response.campaign_id,
+      participant_id:  participantData.id,
+      score:           response.score,
+      time_taken:      response.time_taken,
+      total_questions: response.total_questions ?? 0,  // correct column name
+      completed_at:    new Date().toISOString(),
+    }])
     .select();
 
   if (responseError) throw responseError;
-  if (!responseDataArr || responseDataArr.length === 0)
-    throw new Error("Failed to create response");
+  if (!rRows || rRows.length === 0) throw new Error("Failed to create response");
 
-  const responseData = responseDataArr[0];
-
-  // Step 4: Insert into `leaderboard` and recalculate ranks
-  try {
-    const { error: lbError } = await supabase.from("leaderboard").insert({
-      campaign_id: response.campaign_id,
-      participant_name: participant.full_name,
-      participant_email: participant.email,
-      participant_mobile: participant.mobile,
-      score: response.score,
-      total: response.total ?? 0,
-      time_taken: response.time_taken,
-      completed_at: new Date().toISOString(),
-    });
-
-    if (lbError) {
-      console.error("Leaderboard insert error:", lbError);
-    } else {
-      const { data: ordered } = await supabase
-        .from("leaderboard")
-        .select("id, score, time_taken")
-        .eq("campaign_id", response.campaign_id)
-        .order("score", { ascending: false })
-        .order("time_taken", { ascending: true });
-
-      if (ordered && ordered.length) {
-        for (let i = 0; i < ordered.length; i++) {
-          await supabase
-            .from("leaderboard")
-            .update({ rank: i + 1 })
-            .eq("id", ordered[i].id);
-        }
-      }
-    }
-  } catch (err) {
-    console.error("Failed to insert/update leaderboard:", err);
-  }
-
-  // Step 5: Log activity
+  // ── Step 4: Log activity (non-fatal) ──────────────────────────────────────
   try {
     await supabase.from("activity_log").insert({
-      type: "quiz_completed",
-      description: `${participant.full_name} completed the quiz with score ${response.score}/${response.total ?? 0}`,
+      type:        "quiz_completed",
+      description: `${participant.full_name} completed the quiz with score ${response.score}/${response.total_questions ?? 0}`,
       metadata: {
         campaign_id: response.campaign_id,
-        score: response.score,
-        time_taken: response.time_taken,
+        score:       response.score,
+        time_taken:  response.time_taken,
       },
     });
-  } catch (_) {
-    // Non-fatal
-  }
+  } catch (_) { /* non-fatal */ }
 
-  return { participant: participantData, response: responseData };
+  return { participant: participantData, response: rRows[0] };
 }
 
 // ─── PARTICIPANTS ────────────────────────────────────────────────────────────
@@ -460,22 +910,16 @@ export async function saveParticipantRegistration(
   campaignId?: string
 ) {
   try {
-    const payload: any = {
-      full_name: participant.full_name,
-      email: participant.email,
-      mobile: participant.mobile,
-      registered_at: new Date().toISOString(),
-    };
-
-    if (campaignId) {
-      payload.campaign_id = campaignId;
-    }
-
     const { data, error } = await supabase
       .from("participants")
-      .insert([payload])
+      .insert([{
+        full_name:     participant.full_name,
+        email:         participant.email,
+        mobile:        participant.mobile,
+        campaign_id:   campaignId ?? null,
+        registered_at: new Date().toISOString(),
+      }])
       .select();
-
     if (error) throw error;
     if (!data || data.length === 0) throw new Error("Failed to create participant");
     return data[0];
@@ -486,6 +930,9 @@ export async function saveParticipantRegistration(
 }
 
 // ─── LEADERBOARD ─────────────────────────────────────────────────────────────
+// Read from the view — always fine.
+// "Delete" means deleting the underlying `responses` row (the view updates automatically).
+// "Adjust rank" is not possible — rank is computed by the view from score + time_taken.
 
 export async function getLeaderboard(campaignId?: string, limit = 50) {
   let query = supabase
@@ -493,58 +940,20 @@ export async function getLeaderboard(campaignId?: string, limit = 50) {
     .select("*")
     .order("rank", { ascending: true })
     .limit(limit);
-
   if (campaignId) query = query.eq("campaign_id", campaignId);
-
   const { data, error } = await query;
   if (error) throw error;
   return data;
 }
 
-export async function updateLeaderboardEntry(
-  id: string,
-  updates: Record<string, any>
-) {
-  const { data, error } = await supabase
-    .from("leaderboard")
-    .update(updates)
-    .eq("id", id)
-    .select();
+/**
+ * Delete a leaderboard entry by removing the underlying `responses` row.
+ * The leaderboard view reflects the change automatically.
+ * `id` here is the response ID exposed by the view.
+ */
+export async function deleteLeaderboardEntry(responseId: string) {
+  const { error } = await supabase.from("responses").delete().eq("id", responseId);
   if (error) throw error;
-  if (!data || data.length === 0) throw new Error("Leaderboard entry not found");
-  return data[0];
-}
-
-export async function deleteLeaderboardEntry(id: string) {
-  const { error } = await supabase.from("leaderboard").delete().eq("id", id);
-  if (error) throw error;
-  return true;
-}
-
-export async function adjustLeaderboardRank(
-  campaignId: string,
-  entryId: string,
-  newRank: number
-) {
-  const { data: current } = await supabase
-    .from("leaderboard")
-    .select("id")
-    .eq("campaign_id", campaignId)
-    .order("rank", { ascending: true });
-
-  if (!current) return null;
-
-  const ids = current.map((r: any) => r.id).filter(Boolean);
-  const idx = ids.indexOf(entryId);
-  if (idx === -1) return null;
-  ids.splice(idx, 1);
-  const insertAt = Math.max(0, Math.min(newRank - 1, ids.length));
-  ids.splice(insertAt, 0, entryId);
-
-  for (let i = 0; i < ids.length; i++) {
-    await supabase.from("leaderboard").update({ rank: i + 1 }).eq("id", ids[i]);
-  }
-
   return true;
 }
 

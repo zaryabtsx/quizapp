@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import { useNavigate } from "react-router-dom";
 import { getDashboardStats } from "../../../lib/api";
+import { supabase } from "../../../lib/supabase";
 import type { ActivityLog } from "../../../types/database";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ const ACTIVITY_ICONS: Record<string, string> = {
   quiz_completed: "🎉",
 };
 
-const POLL_MS = 30_000;
+const POLL_MS = 30_000; // Fallback polling interval
 
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
 
@@ -106,8 +107,40 @@ export function AdminDashboard() {
   useEffect(() => {
     fetchStats();
     pollingRef.current = setInterval(() => fetchStats(true), POLL_MS);
+
+    // Real-time subscriptions — automatically refetch when data changes
+    const participantsSubscription = supabase
+      .channel("participants_changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "participants" },
+        () => fetchStats(true)
+      )
+      .subscribe();
+
+    const quizAttemptsSubscription = supabase
+      .channel("quiz_attempts_changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "quiz_attempts" },
+        () => fetchStats(true)
+      )
+      .subscribe();
+
+    const activityLogSubscription = supabase
+      .channel("activity_log_changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "activity_log" },
+        () => fetchStats(true)
+      )
+      .subscribe();
+
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
+      participantsSubscription.unsubscribe();
+      quizAttemptsSubscription.unsubscribe();
+      activityLogSubscription.unsubscribe();
     };
   }, []);
 

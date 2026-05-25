@@ -1,217 +1,177 @@
-import { useState, useEffect, useRef } from "react";
-import { Download, Trophy, Users, Clock, Target, RefreshCw } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Download, Trophy, Users, Clock, Target, RefreshCw, AlertCircle } from "lucide-react";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-
-import { useStore } from "../../store/StoreContext";
-import { QUESTIONS } from "../../store/questions";
 import { maskMobile } from "../../store/utils";
-import { getLeaderboard, deleteLeaderboardEntry, adjustLeaderboardRank } from "../../lib/api";
+import { supabase } from "../../lib/supabase";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type TimePeriod = "all" | "daily" | "weekly" | "monthly";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Normalise a raw entry from Supabase OR the local store into one shape. */
-function normalise(p: any, fallbackIndex: number) {
-  return {
-    id: p?.id ?? fallbackIndex,
-    rank: p?.rank ?? fallbackIndex + 1,
-    name: p?.participant_name ?? p?.name ?? "—",
-    mobile: p?.participant_mobile ?? p?.mobile ?? "",
-    email: p?.participant_email ?? p?.email ?? "—",
-    score: Number(p?.score ?? 0),
-    // FIX 1 & 2: prefer Supabase `total`, fall back to local `totalQuestions`
-    total: Number(p?.total ?? p?.totalQuestions ?? 5),
-    // FIX 1: prefer Supabase `time_taken`, fall back to local `timeSec`
-    timeSec: Number(p?.time_taken ?? p?.timeSec ?? 0),
-    createdAt: p?.created_at ?? p?.date ?? "—",
-    sessionId: p?.session_id ?? p?.sessionId ?? "",
-    campaignId: p?.campaign_id ?? p?.campaignId ?? undefined,
-    // FIX 4: per-question answers only exist in local store data
-    answers: Array.isArray(p?.answers) ? p.answers : null,
-  };
+interface LeaderboardRow {
+  id: string;           // this is the response ID exposed by the view
+  rank: number;         // computed by the view — read-only
+  participant_name: string;
+  participant_mobile: string;
+  participant_email: string;
+  score: number;
+  total_questions: number;  // correct column name (NOT `total`)
+  time_taken: number;
+  completed_at: string;
+  campaign_id: string;
 }
 
-/** Filter entries by time period using `createdAt`. */
-function filterByPeriod(entries: ReturnType<typeof normalise>[], period: TimePeriod) {
-  if (period === "all") return entries;
-  const now = Date.now();
-  const cutoffs: Record<Exclude<TimePeriod, "all">, number> = {
-    daily: 24 * 60 * 60 * 1000,
-    weekly: 7 * 24 * 60 * 60 * 1000,
-    monthly: 30 * 24 * 60 * 60 * 1000,
-  };
-  const cutoff = now - cutoffs[period as Exclude<TimePeriod, "all">];
-  return entries.filter((e) => {
-    const ts = e.createdAt ? new Date(e.createdAt).getTime() : NaN;
-    return !isNaN(ts) && ts >= cutoff;
-  });
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtTime(sec: number | null | undefined): string {
+  if (sec == null || (sec === 0 && sec !== 0)) return "—";
+  const s = Number(sec);
+  if (!isFinite(s)) return "—";
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function fmtTime(sec: number) {
-  if (!sec) return "—";
-  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString("en-GB", {
+      day: "2-digit", month: "short", year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+function getPeriodCutoff(period: TimePeriod): Date | null {
+  if (period === "all") return null;
+  const now = new Date();
+  if (period === "daily")   { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
+  if (period === "weekly")  return new Date(now.getTime() - 7  * 86_400_000);
+  if (period === "monthly") return new Date(now.getTime() - 30 * 86_400_000);
+  return null;
+}
 
-const POLL_INTERVAL_MS = 30_000; // FIX 5: poll every 30 s
+// ─── Component ────────────────────────────────────────────────────────────────
 
-export function LeaderboardPage() {
-  const { participants: storeParticipants = [] } = useStore();
-
+export function AdminLeaderboard() {
   const [activePeriod, setActivePeriod] = useState<TimePeriod>("all");
-  const [rawEntries, setRawEntries] = useState<any[]>([]);
-  const [loadingEntries, setLoadingEntries] = useState(false);
-  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
-
-  const [adjustModal, setAdjustModal] = useState<ReturnType<typeof normalise> | null>(null);
-  const [adjustReason, setAdjustReason] = useState("");
-  const [adjustNewRank, setAdjustNewRank] = useState(1);
+  const [allEntries,   setAllEntries]   = useState<LeaderboardRow[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
+  const [lastUpdated,  setLastUpdated]  = useState<Date | null>(null);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // -------------------------------------------------------------------------
-  // Data fetching + polling (FIX 5)
-  // -------------------------------------------------------------------------
-  async function fetchEntries(silent = false) {
-    if (!silent) setLoadingEntries(true);
+  // ── Fetch straight from Supabase (SELECT on view is always fine) ───────────
+  const fetchEntries = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    setError(null);
     try {
-      const data = await getLeaderboard(undefined, 200);
-      setRawEntries(data || []);
-      setLastRefreshed(new Date());
-    } catch (err) {
-      console.error("Failed to load leaderboard entries:", err);
+      const { data, error: sbError } = await supabase
+        .from("leaderboard")
+        .select("*")
+        .order("rank", { ascending: true })
+        .limit(500);
+
+      if (sbError) {
+        setError(`Database error: ${sbError.message} (code: ${sbError.code})`);
+        return;
+      }
+      setAllEntries((data as LeaderboardRow[]) ?? []);
+      setLastUpdated(new Date());
+    } catch (err: any) {
+      setError(err?.message ?? "Unknown error fetching leaderboard");
     } finally {
-      if (!silent) setLoadingEntries(false);
+      if (!silent) setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     fetchEntries();
+    pollingRef.current = setInterval(() => fetchEntries(true), 30_000);
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+  }, [fetchEntries]);
 
-    // FIX 5: start polling
-    pollingRef.current = setInterval(() => fetchEntries(true), POLL_INTERVAL_MS);
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-    };
-  }, []);
+  // ── Filter by period ───────────────────────────────────────────────────────
+  const entries: LeaderboardRow[] = (() => {
+    const cutoff = getPeriodCutoff(activePeriod);
+    if (!cutoff) return allEntries;
+    return allEntries.filter((e) => {
+      const ts = e.completed_at ? new Date(e.completed_at) : null;
+      return ts && ts >= cutoff;
+    });
+  })();
 
-  // -------------------------------------------------------------------------
-  // Derived data
-  // -------------------------------------------------------------------------
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  const total = entries.length;
 
-  // Use Supabase data when available; fall back to local store
-  const source = rawEntries.length ? rawEntries : storeParticipants;
-  const allNormalised = source.map(normalise);
-
-  // FIX 3: apply time-period filter to the already-normalised list
-  const entries = filterByPeriod(allNormalised, activePeriod);
-
-  const totalPart = entries.length;
-
-  const avgScore = totalPart
-    ? (entries.reduce((a, p) => a + p.score, 0) / totalPart).toFixed(1)
+  const avgScore = total
+    ? (entries.reduce((a, p) => a + (p.score ?? 0), 0) / total).toFixed(1)
     : "—";
 
-  // FIX 2: compare score against normalised `total` (not `totalQuestions`)
-  const perfectScores = entries.filter((p) => p.score === p.total).length;
+  // FIX: compare against total_questions (not `total`)
+  const perfectScores = entries.filter(
+    (p) => Number(p.score) === Number(p.total_questions) && Number(p.total_questions) > 0
+  ).length;
 
-  const avgTimeSec = totalPart
-    ? Math.round(entries.reduce((a, p) => a + p.timeSec, 0) / totalPart)
+  const avgTimeSec = total
+    ? Math.round(entries.reduce((a, p) => a + (Number(p.time_taken) || 0), 0) / total)
     : 0;
-  const avgTimeStr = totalPart ? fmtTime(avgTimeSec) : "—";
 
-  // FIX 4: per-question analysis only when answer data is present
-  const hasAnswerData = entries.some((p) => p.answers !== null);
-  const questionAnalysis = Array.isArray(QUESTIONS)
-    ? QUESTIONS.map((q: any, i: number) => ({
-        question: `Q${i + 1}`,
-        label: (q?.text || "Question").slice(0, 20) + "…",
-        correct: hasAnswerData && totalPart
-          ? Math.round(
-              entries.filter(
-                (p) => p.answers !== null && p.answers[i] === q?.correctAnswer
-              ).length /
-                entries.filter((p) => p.answers !== null).length *
-                100
-            )
-          : null, // null = no data
-        difficulty: q?.difficulty || "medium",
-      }))
-    : [];
+  // ── Score distribution chart ───────────────────────────────────────────────
+  const scoreDistribution = (() => {
+    if (!total) return [];
+    const maxQ = entries[0]?.total_questions ?? 5;  // FIX: total_questions
+    const buckets: Record<number, number> = {};
+    for (let i = 0; i <= maxQ; i++) buckets[i] = 0;
+    entries.forEach((e) => { const s = Number(e.score) || 0; if (s in buckets) buckets[s]++; });
+    return Object.entries(buckets).map(([score, count]) => ({
+      score:  `${score}/${maxQ}`,
+      count,
+      pct: Math.round((count / total) * 100),
+    }));
+  })();
 
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-  const handleDelete = async (id: string | number) => {
-    if (!confirm("Delete this leaderboard entry? This cannot be undone.")) return;
-    try {
-      await deleteLeaderboardEntry(String(id));
-      await fetchEntries();
-    } catch (err) {
-      console.error("Failed to delete entry:", err);
-      alert("Failed to delete entry.");
-    }
+  // ── Top 5 fastest perfect-scorers ─────────────────────────────────────────
+  const top5Fastest = [...entries]
+    .filter((e) => Number(e.score) === Number(e.total_questions) && Number(e.total_questions) > 0)
+    .sort((a, b) => Number(a.time_taken) - Number(b.time_taken))
+    .slice(0, 5);
+
+  // ── Delete: remove the underlying `responses` row, view updates itself ─────
+  const handleDelete = async (responseId: string) => {
+    if (!confirm("Delete this entry? The response record will be permanently removed.")) return;
+    const { error: delErr } = await supabase.from("responses").delete().eq("id", responseId);
+    if (delErr) { alert(`Delete failed: ${delErr.message}`); return; }
+    await fetchEntries();
   };
 
-  const handleApplyAdjustment = async () => {
-    if (!adjustModal) return;
-    try {
-      await adjustLeaderboardRank(
-        adjustModal.campaignId as string,
-        String(adjustModal.id),
-        adjustNewRank
-      );
-      await fetchEntries();
-      setAdjustModal(null);
-    } catch (err) {
-      console.error("Failed to adjust rank:", err);
-      alert("Failed to adjust rank.");
-    }
-  };
-
+  // ── Export ────────────────────────────────────────────────────────────────
   const exportCSV = () => {
     if (!entries.length) return;
-    const headers = ["Rank", "Name", "Mobile", "Email", "Score", "Time", "Date", "SessionID"];
+    const headers = ["Rank", "Name", "Mobile", "Email", "Score", "Time", "Date"];
     const rows = entries.map((p) => [
       p.rank,
-      p.name,
-      p.mobile,
-      p.email,
-      `${p.score}/${p.total}`,
-      fmtTime(p.timeSec),
-      p.createdAt,
-      p.sessionId,
+      p.participant_name,
+      p.participant_mobile,
+      p.participant_email,
+      `${p.score}/${p.total_questions}`,  // FIX: total_questions
+      fmtTime(p.time_taken),
+      fmtDate(p.completed_at),
     ]);
     const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
-    const a = document.createElement("a");
-    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-    a.download = `leaderboard_${activePeriod}.csv`;
+    const a   = document.createElement("a");
+    a.href    = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = `leaderboard_${activePeriod}_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
   };
 
-  // -------------------------------------------------------------------------
-  // UI helpers
-  // -------------------------------------------------------------------------
-  const scorePillClass = (score: number, total: number) => {
-    if (score === total)
-      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400";
-    if (score >= total / 2)
-      return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400";
-    return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+  // ── UI helpers ─────────────────────────────────────────────────────────────
+  const scorePillClass = (score: number, tot: number) => {
+    if (score === tot && tot > 0) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400";
+    if (score >= tot / 2)         return "bg-amber-100  text-amber-700  dark:bg-amber-900/30  dark:text-amber-400";
+    return                               "bg-red-100    text-red-700    dark:bg-red-900/30    dark:text-red-400";
   };
 
   const rankBadge = (rank: number) => {
@@ -225,11 +185,10 @@ export function LeaderboardPage() {
     );
   };
 
-  // -------------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------------
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background">
+
       {/* Nav */}
       <nav className="sticky top-0 bg-card border-b border-border px-6 py-4 z-10 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -238,24 +197,24 @@ export function LeaderboardPage() {
           <span className="text-xs text-muted-foreground font-normal">Admin</span>
         </div>
         <div className="flex items-center gap-2">
-          {/* FIX 5: last-refreshed timestamp + manual refresh */}
-          {lastRefreshed && (
+          {lastUpdated && (
             <span className="text-xs text-muted-foreground hidden sm:block">
-              Updated {lastRefreshed.toLocaleTimeString()}
+              Updated {lastUpdated.toLocaleTimeString()}
             </span>
           )}
-          <button
-            onClick={() => fetchEntries()}
-            disabled={loadingEntries}
-            className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-lg hover:border-[#4F46E5] transition-colors disabled:opacity-50"
-            title="Refresh now"
-          >
-            <RefreshCw className={`w-4 h-4 ${loadingEntries ? "animate-spin" : ""}`} />
-          </button>
           <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 rounded-full font-medium">
             <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-            Live
+            Live · 30s
           </span>
+          <button
+            onClick={() => fetchEntries()}
+            disabled={loading}
+            title="Refresh now"
+            className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-lg hover:border-[#4F46E5] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
           <button
             onClick={exportCSV}
             className="flex items-center gap-1.5 text-sm border border-border px-3 py-1.5 rounded-lg hover:border-[#4F46E5] transition-colors"
@@ -267,22 +226,62 @@ export function LeaderboardPage() {
       </nav>
 
       <div className="max-w-6xl mx-auto px-6 py-6">
+
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold mb-1">Leaderboard Management</h1>
-          <p className="text-sm text-muted-foreground">Summer Quiz Challenge 2025</p>
+          <p className="text-sm text-muted-foreground">
+            Quiz Challenge · All Campaigns ·{" "}
+            <span className="text-[#4F46E5] font-medium">
+              Rankings are auto-calculated by score then time
+            </span>
+          </p>
         </div>
+
+        {/* Error banner */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-700 mb-1">Failed to load leaderboard</p>
+              <p className="text-xs text-red-600 font-mono">{error}</p>
+            </div>
+            <button onClick={() => fetchEntries()} className="text-xs text-red-600 underline flex-shrink-0">
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Stats Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Total Participants", value: totalPart || "—", icon: <Users className="w-4 h-4" />, sub: "Completed quiz" },
-            { label: "Avg Score", value: totalPart ? `${avgScore}/5` : "—", icon: <Target className="w-4 h-4" />, sub: "Out of 5 questions" },
-            { label: "Perfect Scores", value: perfectScores || (totalPart ? 0 : "—"), icon: <Trophy className="w-4 h-4" />, sub: "5/5 correct" },
-            { label: "Avg Time", value: avgTimeStr, icon: <Clock className="w-4 h-4" />, sub: "To complete" },
+            {
+              label: "Total Participants",
+              value: loading ? "…" : total,
+              icon: <Users className="w-4 h-4" />,
+              sub: activePeriod === "all" ? "All time" : `This ${activePeriod}`,
+            },
+            {
+              label: "Avg Score",
+              value: loading ? "…" : (total ? `${avgScore}/${entries[0]?.total_questions ?? 5}` : "—"),
+              icon: <Target className="w-4 h-4" />,
+              sub: "Per participant",
+            },
+            {
+              label: "Perfect Scores",
+              value: loading ? "…" : perfectScores,
+              icon: <Trophy className="w-4 h-4" />,
+              sub: total > 0 ? `${Math.round((perfectScores / total) * 100)}% of total` : "—",
+            },
+            {
+              label: "Avg Time",
+              value: loading ? "…" : (total ? fmtTime(avgTimeSec) : "—"),
+              icon: <Clock className="w-4 h-4" />,
+              sub: "To complete quiz",
+            },
           ].map((s) => (
             <div key={s.label} className="bg-card border border-border rounded-2xl p-5">
-              <div className="flex items-center gap-2 text-[#4F46E5] mb-2 text-sm">
+              <div className="flex items-center gap-2 text-[#4F46E5] mb-2">
                 {s.icon}
                 <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
                   {s.label}
@@ -296,78 +295,93 @@ export function LeaderboardPage() {
 
         {/* Analytics Row */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
-          {/* Question Analysis — FIX 4 */}
+
+          {/* Score Distribution */}
           <div className="bg-card border border-border rounded-2xl p-5">
-            <h3 className="font-semibold mb-1">Question Difficulty Analysis</h3>
-            <p className="text-xs text-muted-foreground mb-4">% correct per question</p>
-            {!hasAnswerData ? (
-              <div className="h-48 flex flex-col items-center justify-center text-muted-foreground text-sm gap-2">
-                <span className="text-2xl opacity-30">📊</span>
-                <span>Per-question data not stored in leaderboard.</span>
-                <span className="text-xs text-center">
-                  Store <code>answers[]</code> at submission time to enable this chart.
-                </span>
+            <h3 className="font-semibold mb-1">Score Distribution</h3>
+            <p className="text-xs text-muted-foreground mb-4">Participants per score</p>
+            {loading ? (
+              <div className="h-48 flex items-center justify-center">
+                <RefreshCw className="w-5 h-5 animate-spin text-muted-foreground" />
               </div>
-            ) : totalPart === 0 ? (
+            ) : total === 0 ? (
               <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
                 No data yet
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={questionAnalysis}>
+                <BarChart data={scoreDistribution}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                  <XAxis dataKey="question" fontSize={12} />
-                  <YAxis fontSize={12} domain={[0, 100]} unit="%" />
-                  <Tooltip formatter={(v: number) => `${v}%`} />
-                  <Bar dataKey="correct" fill="#4F46E5" radius={[4, 4, 0, 0]} />
+                  <XAxis dataKey="score" fontSize={12} />
+                  <YAxis fontSize={12} allowDecimals={false} />
+                  <Tooltip
+                    formatter={(v: number, _: string, props: any) => [
+                      `${v} (${props.payload.pct}%)`, "Count",
+                    ]}
+                  />
+                  <Bar dataKey="count" fill="#4F46E5" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </div>
 
-          {/* Participation Funnel */}
+          {/* Top 5 Fastest */}
           <div className="bg-card border border-border rounded-2xl p-5">
-            <h3 className="font-semibold mb-1">Participation Funnel</h3>
-            <p className="text-xs text-muted-foreground mb-4">Drop-off at each stage</p>
-            <div className="space-y-3">
-              {[
-                { stage: "QR Scan / Visit", count: Math.max(totalPart + Math.floor(totalPart * 0.4), 0), pct: 100 },
-                { stage: "Registered", count: Math.max(totalPart + Math.floor(totalPart * 0.05), 0), pct: totalPart > 0 ? 94 : 0 },
-                { stage: "OTP Verified", count: Math.max(totalPart + 2, 0), pct: totalPart > 0 ? 89 : 0 },
-                { stage: "Started Quiz", count: Math.max(totalPart + 1, 0), pct: totalPart > 0 ? 85 : 0 },
-                { stage: "Completed Quiz", count: totalPart, pct: totalPart > 0 ? 79 : 0 },
-              ].map((item) => (
-                <div key={item.stage}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium">{item.stage}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {item.count} ({item.pct}%)
+            <h3 className="font-semibold mb-1">Top 5 Fastest (Perfect Score)</h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Among participants with 100% score
+            </p>
+            {loading ? (
+              <div className="h-48 flex items-center justify-center">
+                <RefreshCw className="w-5 h-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : top5Fastest.length === 0 ? (
+              <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
+                No perfect scores yet
+              </div>
+            ) : (
+              <div className="space-y-3 pt-1">
+                {top5Fastest.map((e, i) => (
+                  <div key={e.id} className="flex items-center gap-3">
+                    <span className="text-base w-6 text-center flex-shrink-0">
+                      {["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i]}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{e.participant_name}</p>
+                      <div className="h-1.5 bg-muted rounded-full mt-1 overflow-hidden">
+                        <div
+                          className="h-full bg-[#4F46E5] rounded-full transition-all"
+                          style={{
+                            width: `${Math.max(10, 100 - (Number(e.time_taken) / 300) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-sm font-mono font-semibold text-muted-foreground flex-shrink-0">
+                      {fmtTime(e.time_taken)}
                     </span>
                   </div>
-                  <div className="h-2.5 bg-muted rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#4F46E5] rounded-full transition-all duration-500"
-                      style={{ width: `${item.pct}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
         {/* Leaderboard Table */}
         <div className="bg-card border border-border rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-            <h3 className="font-semibold text-lg">
-              Rankings
-              {activePeriod !== "all" && (
-                <span className="ml-2 text-xs text-muted-foreground font-normal">
-                  ({activePeriod})
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold text-lg">Rankings</h3>
+              {!loading && total > 0 && (
+                <span className="text-xs bg-[#4F46E5]/10 text-[#4F46E5] px-2 py-0.5 rounded-full font-semibold">
+                  {total} entries
                 </span>
               )}
-            </h3>
-            {/* FIX 3: period buttons now filter the already-fetched normalised list */}
+              {/* Inform admins that rank is computed — no manual adjustment possible */}
+              <span className="text-xs text-muted-foreground hidden sm:block">
+                Auto-ranked by score ↓ then time ↑
+              </span>
+            </div>
             <div className="flex gap-1">
               {(["all", "daily", "weekly", "monthly"] as TimePeriod[]).map((t) => (
                 <button
@@ -385,12 +399,12 @@ export function LeaderboardPage() {
             </div>
           </div>
 
-          {loadingEntries ? (
+          {loading ? (
             <div className="py-16 text-center">
               <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#4F46E5] mb-3" />
               <p className="text-muted-foreground text-sm">Loading rankings…</p>
             </div>
-          ) : totalPart === 0 ? (
+          ) : total === 0 ? (
             <div className="py-16 text-center">
               <div className="text-4xl mb-3 opacity-30">📊</div>
               <p className="text-muted-foreground text-sm">
@@ -404,8 +418,11 @@ export function LeaderboardPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border bg-muted/30">
-                    {["Rank","Name","Mobile","Email","Score","Time","Date","Actions"].map((h) => (
-                      <th key={h} className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    {["Rank", "Name", "Mobile", "Email", "Score", "Time", "Date", "Actions"].map((h) => (
+                      <th
+                        key={h}
+                        className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide"
+                      >
                         {h}
                       </th>
                     ))}
@@ -417,47 +434,38 @@ export function LeaderboardPage() {
                       key={p.id}
                       className="border-b border-border last:border-b-0 hover:bg-muted/20 transition-colors"
                     >
-                      <td className="px-5 py-3.5">{rankBadge(p.rank)}</td>
-                      <td className="px-5 py-3.5 font-medium text-sm">{p.name}</td>
+                      <td className="px-5 py-3.5">{rankBadge(p.rank ?? i + 1)}</td>
+                      <td className="px-5 py-3.5 font-medium text-sm">{p.participant_name || "—"}</td>
                       <td className="px-5 py-3.5">
                         <span className="font-mono text-xs text-muted-foreground">
-                          {maskMobile(p.mobile)}
+                          {maskMobile(p.participant_mobile || "")}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-xs text-muted-foreground truncate max-w-[140px]">
-                        {p.email}
+                        {p.participant_email || "—"}
                       </td>
                       <td className="px-5 py-3.5">
-                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${scorePillClass(p.score, p.total)}`}>
-                          {p.score}/{p.total}
+                        {/* FIX: total_questions */}
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                          scorePillClass(Number(p.score) || 0, Number(p.total_questions) || 5)
+                        }`}>
+                          {p.score ?? 0}/{p.total_questions ?? 5}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-muted-foreground font-mono">
-                        {fmtTime(p.timeSec)}
+                        {fmtTime(p.time_taken)}
                       </td>
-                      <td className="px-5 py-3.5 text-xs text-muted-foreground">{p.createdAt}</td>
+                      <td className="px-5 py-3.5 text-xs text-muted-foreground">
+                        {fmtDate(p.completed_at)}
+                      </td>
                       <td className="px-5 py-3.5">
-                        <div className="flex gap-2">
-                          <button className="text-xs px-3 py-1.5 border border-border hover:border-[#4F46E5] rounded-lg transition-colors">
-                            Details
-                          </button>
-                          <button
-                            onClick={() => {
-                              setAdjustModal(p);
-                              setAdjustNewRank(p.rank);
-                              setAdjustReason("");
-                            }}
-                            className="text-xs px-3 py-1.5 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-lg transition-colors"
-                          >
-                            Adjust
-                          </button>
-                          <button
-                            onClick={() => handleDelete(p.id)}
-                            className="text-xs px-3 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          >
-                            Delete
-                          </button>
-                        </div>
+                        {/* Adjust removed: rank is computed by the view, cannot be manually set */}
+                        <button
+                          onClick={() => handleDelete(p.id)}
+                          className="text-xs px-3 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -467,66 +475,6 @@ export function LeaderboardPage() {
           )}
         </div>
       </div>
-
-      {/* Adjust Rank Modal */}
-      {adjustModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 z-50">
-          <div className="bg-card rounded-2xl p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-xl font-semibold mb-4">Adjust Rank</h3>
-
-            <div className="bg-muted/30 rounded-xl p-4 mb-4">
-              <p className="text-xs text-muted-foreground mb-0.5">Participant</p>
-              <p className="font-semibold">{adjustModal.name}</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Current score: {adjustModal.score}/{adjustModal.total} · {fmtTime(adjustModal.timeSec)}
-              </p>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-sm font-semibold mb-2">Move to Rank</label>
-              <select
-                aria-label="Move to rank"
-                value={adjustNewRank}
-                onChange={(e) => setAdjustNewRank(Number(e.target.value))}
-                className="w-full h-12 px-4 rounded-xl border border-border bg-background focus:outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/20"
-              >
-                {Array.from({ length: Math.max(1, allNormalised.length) }).map((_, i) => (
-                  <option key={i + 1} value={i + 1}>#{i + 1}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="mb-5">
-              <label className="block text-sm font-semibold mb-2">
-                Reason <span className="text-red-400">*</span>
-              </label>
-              <textarea
-                rows={3}
-                value={adjustReason}
-                onChange={(e) => setAdjustReason(e.target.value)}
-                placeholder="Enter reason for manual adjustment..."
-                className="w-full px-4 py-3 rounded-xl border border-border bg-background focus:outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/20 resize-none text-sm"
-              />
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                onClick={() => setAdjustModal(null)}
-                className="flex-1 py-3 border-2 border-border hover:border-[#4F46E5] rounded-xl font-semibold transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                disabled={!adjustReason.trim()}
-                className="flex-1 py-3 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-xl font-semibold transition-colors disabled:opacity-40"
-                onClick={handleApplyAdjustment}
-              >
-                Apply Adjustment
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
